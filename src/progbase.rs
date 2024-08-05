@@ -1,8 +1,11 @@
+include!(concat!(env!("OUT_DIR"), "/version.rs"));
+
 use clap::Parser;
 use std::env;
 use std::path::PathBuf;
 use log::LevelFilter;
 use std::sync::{Arc, Mutex};
+use std::process::exit;
 
 #[derive(Parser)]
 pub struct Opts {
@@ -60,6 +63,21 @@ lazy_static::lazy_static! {
 pub fn init() {
     let mut options = OPTIONS.lock().unwrap();
     let opts = Opts::parse();
+    if opts.version {
+        println!("{}", GIT_REPO);
+        println!("Build date: {}", BUILD_DATE);
+        println!("Commit date: {}", GIT_COMMIT_DATE);
+        println!("Branch: {}", GIT_BRANCH);
+        println!("Hash: {}", GIT_HASH);
+        if GIT_IS_DIRTY.is_empty() {
+            println!("Tag: {}", GIT_TAG);
+        }
+        else {
+            println!("Tag: {} - {}", GIT_TAG, GIT_IS_DIRTY);
+        }
+        println!("Author: {}", GIT_AUTHOR);
+        exit(0)
+    }
     *options = Options::new(opts);
 }
 
