@@ -15,12 +15,15 @@ pub struct Opts {
     pub log_level: String,
     #[clap(short, long)]
     pub version: bool,
+    #[clap(short, long)]
+    pub stdout: bool,
 }
 
 pub struct Options {
     pub exe: String,
     pub id: String,
     pub log_level: LevelFilter,
+    pub stdout: bool,
 }
 
 impl Options {
@@ -46,6 +49,7 @@ impl Options {
             exe: exe_name,
             id: opts.id,
             log_level: log_level,
+            stdout: opts.stdout,
         }
     }
 }
@@ -57,6 +61,7 @@ lazy_static::lazy_static! {
         exe: String::new(),
         id: String::new(),
         log_level: LevelFilter::Info,
+        stdout: false,
     }));
 }
 
@@ -101,6 +106,12 @@ pub fn proc_name() -> String { // todo samesies
 pub fn log_lvl() -> LevelFilter {
     let options = OPTIONS.lock().unwrap();
     options.log_level
+}
+
+#[allow(dead_code)]
+pub fn stdout() -> bool {
+    let options = OPTIONS.lock().unwrap();
+    options.stdout
 }
 
 #[allow(dead_code)]
