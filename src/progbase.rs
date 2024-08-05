@@ -64,17 +64,21 @@ pub fn init() {
     let mut options = OPTIONS.lock().unwrap();
     let opts = Opts::parse();
     if opts.version {
+/*
+git@github.com:centroid-is/framework-rs.git
+Build date: 2024-08-05 18:26:11
+Commit date: 2024-08-05
+Branch: main
+Hash: 43aa4af47ee2c6aa269f10c9ff9e1cd3b1c1e259
+Tag:  - clean
+Author: Jón Bjarni Bjarnason <jon@centroid.is>
+*/
         println!("{}", GIT_REPO);
         println!("Build date: {}", BUILD_DATE);
         println!("Commit date: {}", GIT_COMMIT_DATE);
         println!("Branch: {}", GIT_BRANCH);
         println!("Hash: {}", GIT_HASH);
-        if GIT_IS_DIRTY.is_empty() {
-            println!("Tag: {}", GIT_TAG);
-        }
-        else {
-            println!("Tag: {} - {}", GIT_TAG, GIT_IS_DIRTY);
-        }
+        println!("Tag: {} - {}", GIT_TAG, GIT_IS_DIRTY);
         println!("Author: {}", GIT_AUTHOR);
         exit(0)
     }
