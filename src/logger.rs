@@ -1,6 +1,5 @@
 use log::{self, Level};
 use std::sync::Once;
-use std::fmt::Debug;
 
 static INIT: Once = Once::new();
 
@@ -31,59 +30,33 @@ impl Logger {
         );
     }
 
-    pub fn log_fmt(&self, level: Level, msg: &str, args: impl Debug, file: &str, line: u32, column: u32) {
-        let formatted_msg = format!("{} - {:?}", msg, args);
-        self.log(level, &formatted_msg, file, line, column);
-    }
-
     pub fn trace(&self, msg: &str, file: &str, line: u32, column: u32) {
         self.log(Level::Trace, msg, file, line, column);
-    }
-
-    pub fn trace_fmt(&self, msg: &str, args: impl Debug, file: &str, line: u32, column: u32) {
-        self.log_fmt(Level::Trace, msg, args, file, line, column);
     }
 
     pub fn debug(&self, msg: &str, file: &str, line: u32, column: u32) {
         self.log(Level::Debug, msg, file, line, column);
     }
 
-    pub fn debug_fmt(&self, msg: &str, args: impl Debug, file: &str, line: u32, column: u32) {
-        self.log_fmt(Level::Debug, msg, args, file, line, column);
-    }
-
     pub fn info(&self, msg: &str, file: &str, line: u32, column: u32) {
         self.log(Level::Info, msg, file, line, column);
-    }
-
-    pub fn info_fmt(&self, msg: &str, args: impl Debug, file: &str, line: u32, column: u32) {
-        self.log_fmt(Level::Info, msg, args, file, line, column);
     }
 
     pub fn warn(&self, msg: &str, file: &str, line: u32, column: u32) {
         self.log(Level::Warn, msg, file, line, column);
     }
 
-    pub fn warn_fmt(&self, msg: &str, args: impl Debug, file: &str, line: u32, column: u32) {
-        self.log_fmt(Level::Warn, msg, args, file, line, column);
-    }
-
     pub fn error(&self, msg: &str, file: &str, line: u32, column: u32) {
         self.log(Level::Error, msg, file, line, column);
     }
-
-    pub fn error_fmt(&self, msg: &str, args: impl Debug, file: &str, line: u32, column: u32) {
-        self.log_fmt(Level::Error, msg, args, file, line, column);
-    }
 }
 
-#[allow(dead_code)]
 macro_rules! log_trace {
     ($logger:expr, $msg:expr) => {
         $logger.trace($msg, file!(), line!(), column!())
     };
     ($logger:expr, $msg:expr, $($arg:tt)+) => {
-        $logger.trace_fmt($msg, ($($arg)+), file!(), line!(), column!())
+        $logger.trace(&format!($msg, $($arg)+), file!(), line!(), column!())
     };
 }
 
@@ -93,7 +66,7 @@ macro_rules! log_debug {
         $logger.debug($msg, file!(), line!(), column!())
     };
     ($logger:expr, $msg:expr, $($arg:tt)+) => {
-        $logger.debug_fmt($msg, ($($arg)+), file!(), line!(), column!())
+        $logger.debug(&format!($msg, $($arg)+), file!(), line!(), column!())
     };
 }
 
@@ -103,7 +76,7 @@ macro_rules! log_info {
         $logger.info($msg, file!(), line!(), column!())
     };
     ($logger:expr, $msg:expr, $($arg:tt)+) => {
-        $logger.info_fmt($msg, ($($arg)+), file!(), line!(), column!())
+        $logger.info(&format!($msg, $($arg)+), file!(), line!(), column!())
     };
 }
 
@@ -113,7 +86,7 @@ macro_rules! log_warn {
         $logger.warn($msg, file!(), line!(), column!())
     };
     ($logger:expr, $msg:expr, $($arg:tt)+) => {
-        $logger.warn_fmt($msg, ($($arg)+), file!(), line!(), column!())
+        $logger.warn(&format!($msg, $($arg)+), file!(), line!(), column!())
     };
 }
 
@@ -123,6 +96,6 @@ macro_rules! log_error {
         $logger.error($msg, file!(), line!(), column!())
     };
     ($logger:expr, $msg:expr, $($arg:tt)+) => {
-        $logger.error_fmt($msg, ($($arg)+), file!(), line!(), column!())
+        $logger.error(&format!($msg, $($arg)+), file!(), line!(), column!())
     };
 }

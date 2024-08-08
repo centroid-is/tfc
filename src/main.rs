@@ -17,11 +17,12 @@ fn main() {
     log_warn!(logger, "This is a warn message");
     log_error!(logger, "This is an error message");
 
-    log_trace!(logger, "This is a trace message with args", 42, "foo");
-    log_debug!(logger, "This is a debug message with args", 42, "foo");
-    log_info!(logger, "This is an info message with args", 42, "foo");
-    log_warn!(logger, "This is a warn message with args", 42, "foo");
-    log_error!(logger, "This is an error message with args", 42, "foo");
+    log_trace!(logger, "This is a {} trace message with {} args", 42, "foo");
+    log_debug!(logger, "This is a debug {} {} message with args", 42, "foo");
+    log_info!(logger, "{} This is an {} info message with args", 42, "foo");
+    log_warn!(logger, "This is a {} warn message {} with args", 42, "foo");
+    log_error!(logger, "This is an {} error message with {} args", 42, "foo");
+    log_error!(logger, "This is an error {} message with args {}", 42, "foo");
 
     info!("Program started with ID: {}", progbase::proc_name());
     println!("Program started with ID: {}", progbase::proc_name());
