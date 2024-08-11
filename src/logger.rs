@@ -1,8 +1,63 @@
-use log::{self, Level};
+use log::{self, Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 use std::sync::Once;
+use syslog::{BasicLogger, Facility, Formatter3164};
 
 static INIT: Once = Once::new();
 
+struct CombinedLogger {
+    env_logger: env_logger::Logger,
+    syslog_logger: BasicLogger,
+}
+
+impl Log for CombinedLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        self.env_logger.enabled(metadata) || self.syslog_logger.enabled(metadata)
+    }
+
+    fn log(&self, record: &Record) {
+        if self.env_logger.enabled(record.metadata()) {
+            self.env_logger.log(record);
+        }
+        if self.syslog_logger.enabled(record.metadata()) {
+            self.syslog_logger.log(record);
+        }
+    }
+
+    fn flush(&self) {
+        self.env_logger.flush();
+        self.syslog_logger.flush();
+    }
+}
+
+fn init_combined_logger() -> Result<(), SetLoggerError> {
+    INIT.call_once(|| {
+        let env_logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
+
+        let formatter = Formatter3164 {
+            facility: Facility::LOG_USER,
+            hostname: None,
+            process: "rust-logger".into(),
+            pid: 0,
+        };
+
+        let syslog_logger = match syslog::unix(formatter) {
+            Ok(logger) => BasicLogger::new(logger),
+            Err(e) => {
+                eprintln!("Could not connect to syslog: {:?}", e);
+                return;
+            }
+        };
+
+        let combined_logger = CombinedLogger {
+            env_logger,
+            syslog_logger,
+        };
+
+        let _ = log::set_boxed_logger(Box::new(combined_logger)).map(|()| log::set_max_level(LevelFilter::Trace));
+    });
+
+    Ok(())
+}
 pub struct Logger {
     key: String,
 }
@@ -10,7 +65,7 @@ pub struct Logger {
 impl Logger {
     pub fn new(key: &str) -> Self {
         INIT.call_once(|| {
-            let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
+            let _ = init_combined_logger();
         });
 
         Logger {

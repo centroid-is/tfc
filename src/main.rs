@@ -7,6 +7,7 @@ use log::info;
 
 
 fn main() {
+    println!("Begin");
     progbase::init();
 
     let logger = Logger::new("example-component");
