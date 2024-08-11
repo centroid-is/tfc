@@ -1,6 +1,6 @@
 mod progbase;
-#[macro_use]
 mod logger;
+mod confman;
 
 use log::{info, log, Level};
 
