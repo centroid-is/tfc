@@ -31,7 +31,9 @@ impl Log for CombinedLogger {
 
 fn init_combined_logger() -> Result<(), SetLoggerError> {
     INIT.call_once(|| {
-        let env_logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
+        let env_logger: env_logger::Logger =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+                .build();
 
         let formatter = Formatter3164 {
             facility: Facility::LOG_USER,
@@ -53,7 +55,8 @@ fn init_combined_logger() -> Result<(), SetLoggerError> {
             syslog_logger,
         };
 
-        let _ = log::set_boxed_logger(Box::new(combined_logger)).map(|()| log::set_max_level(LevelFilter::Trace));
+        let _ = log::set_boxed_logger(Box::new(combined_logger))
+            .map(|()| log::set_max_level(LevelFilter::Trace));
     });
 
     Ok(())
@@ -64,10 +67,7 @@ pub struct Logger {
 
 impl Logger {
     pub fn new(key: &str) -> Self {
-        INIT.call_once(|| {
-            let _ = init_combined_logger();
-        });
-
+        let _ = init_combined_logger();
         Logger {
             key: key.to_string(),
         }
