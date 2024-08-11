@@ -35,7 +35,7 @@ fn init_combined_logger() -> Result<(), SetLoggerError> {
     INIT.call_once(|| {
         let env_logger: env_logger::Logger =
             env_logger::Builder::from_env(env_logger::Env::default())
-                .filter_level(progbase::log_lvl())
+                .filter_level(if progbase::stdout() { progbase::log_lvl() } else { log::LevelFilter::Off })
                 .build();
 
         let formatter = Formatter3164 {
