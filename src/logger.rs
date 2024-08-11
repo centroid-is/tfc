@@ -1,6 +1,8 @@
-use log::{self, Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
+use log::{self, Level, Log, Metadata, Record, SetLoggerError};
 use std::sync::Once;
 use syslog::{BasicLogger, Facility, Formatter3164};
+
+use crate::progbase;
 
 static INIT: Once = Once::new();
 
@@ -32,7 +34,8 @@ impl Log for CombinedLogger {
 fn init_combined_logger() -> Result<(), SetLoggerError> {
     INIT.call_once(|| {
         let env_logger: env_logger::Logger =
-            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            env_logger::Builder::from_env(env_logger::Env::default())
+                .filter_level(progbase::log_lvl())
                 .build();
 
         let formatter = Formatter3164 {
@@ -56,7 +59,7 @@ fn init_combined_logger() -> Result<(), SetLoggerError> {
         };
 
         let _ = log::set_boxed_logger(Box::new(combined_logger))
-            .map(|()| log::set_max_level(LevelFilter::Trace));
+            .map(|()| log::set_max_level(progbase::log_lvl()));
     });
 
     Ok(())
