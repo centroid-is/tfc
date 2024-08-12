@@ -3,7 +3,7 @@ use log::{log, Level};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::{error::Error, fs, path::PathBuf};
+use std::{error::Error, fs, io::Read, path::PathBuf};
 
 use crate::progbase;
 
@@ -12,7 +12,7 @@ struct FileStorage<T> {
     filename: PathBuf,
 }
 
-impl<T: Default> FileStorage<T> {
+impl<T: for<'de> Deserialize<'de>> FileStorage<T> {
     fn new(path: &PathBuf) -> Self {
         if let Some(parent) = path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
@@ -23,21 +23,20 @@ impl<T: Default> FileStorage<T> {
                 );
             }
         }
-        let mut file_content = String::new();
         let mut file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open(path);
-        if let Err(e) = file {
-            panic!(
-                "Error: {:?} Failed to create or open file: {}",
-                e,
-                path.display()
-            );
-        }
+            .open(path)
+            .unwrap_or_else(|e| panic!("Error: {} Failed to create or open file: {}", e, path.display()));
+        let mut file_content  = String::new();
+        file.read_to_string(&mut file_content);
+        let deserialized_value: T = serde_json::from_str(&file_content)
+            .unwrap_or_else(|e| panic!("Error: {} Failed to parse file contents: {}", e, &file_content));
+
+
         FileStorage {
-            value: T::default(),
+            value: deserialized_value,
             filename: path.clone(),
         }
     }
