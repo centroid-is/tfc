@@ -1,65 +1,101 @@
-use std::{error::Error, path::PathBuf};
+use core::panic;
+use log::{log, Level};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json;
+use std::{error::Error, fs, path::PathBuf};
+
+use crate::progbase;
 
 struct FileStorage<T> {
     value: T,
     filename: PathBuf,
 }
 
-impl<T> FileStorage<T> {
-    fn new(&PathBuf path) {
-        
+impl<T: Default> FileStorage<T> {
+    fn new(path: &PathBuf) -> Self {
+        if let Some(parent) = path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                panic!(
+                    "Error: {} Failed to create directories: {}",
+                    e,
+                    parent.display()
+                );
+            }
+        }
+        let mut file_content = String::new();
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path);
+        if let Err(e) = file {
+            panic!(
+                "Error: {:?} Failed to create or open file: {}",
+                e,
+                path.display()
+            );
+        }
+        FileStorage {
+            value: T::default(),
+            filename: path.clone(),
+        }
     }
-    
+
     fn file(&self) -> &PathBuf {
-        filename
+        &self.filename
     }
-    
-    fn set_value(mut &self) -> Result<(), Box<dyn Error>> {
-        Ok()
+
+    fn set_value(&mut self, value: T) -> Result<(), Box<dyn Error>> {
+        // todo
+        self.value = value;
+        Ok(())
     }
 }
-
 
 struct Confman<T> {
     storage: FileStorage<T>,
     key: String,
 }
 
-impl<T> Confman<T> {
-    fn new(bus: zbus::connection, key: &str) -> Self {
-        key = key.clone();
+impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default> Confman<T> {
+    fn new(bus: zbus::Connection, key: &str) -> Self {
+        Confman {
+            storage: FileStorage::<T>::new(&progbase::make_config_file_name(key, "json")),
+            key: key.to_string(),
+        }
     }
 
-    fn value(&self) {
-        self.storage.value()
+    fn value(&self) -> &T {
+        &self.storage.value
     }
 
     fn to_json_string(&self) -> Result<String, Box<dyn Error>> {
-        serde::serde_json::to_string(self.value()).map_err(|e| {
-            log!(target: key, Level::Warn,  "Error serializing to JSON: {}", e);
+        serde_json::to_string(self.value()).map_err(|e| {
+            log!(target: &self.key, Level::Warn,  "Error serializing to JSON: {}", e);
             Box::new(e) as Box<dyn Error>
         })
     }
 
     fn schema(&self) -> String {
-        schemars::schema_for!(T)
+        serde_json::to_string_pretty(&schemars::schema_for!(T)).unwrap()
     }
 
     fn set_changed(&self) -> Result<(), Box<dyn Error>> {
-        json_str = self.to_json_string();
-        if Ok(json_str) {
-            // self.client.set(json_str);
-            // self.storage.set_changed()
-            Ok(())
-        } else {
-            Err(json_str)
-        }
+        let _ = self.to_json_string();
+        // if Ok(json_str) {
+        //     // self.client.set(json_str);
+        //     // self.storage.set_changed()
+        //     Ok(())
+        // } else {
+        //     Err(json_str)
+        // }
+        Ok(())
     }
 
     fn from_string(&mut self, value: &str) -> Result<(), Box<dyn Error>> {
-        let deserialized_value: T = serde::serde_json::from_str(value)?;
-        FileStorage::<T>::set_value(deserialized_value)
-        // self.storage.set_value(deserialized_value);
+        let deserialized_value: T = serde_json::from_str(value)?;
+        self.storage.set_value(deserialized_value)?;
         Ok(())
     }
 
@@ -72,12 +108,7 @@ impl<T> Confman<T> {
     }
 }
 
-
 #[cfg(test)]
-
-// use schemars::{schema_for, JsonSchema};
-use serde::{Deserialize, Serialize};
-
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MyStruct {
@@ -94,7 +125,6 @@ enum MyEnum {
     StringNewType(String),
     StructVariant { floats: Vec<f32> },
 }
-
 
 mod tests {
     #[test]
