@@ -3,7 +3,12 @@ use log::{log, Level};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::{error::Error, fs, io::Read, path::PathBuf};
+use std::{
+    error::Error,
+    fs,
+    io::{Read, Write},
+    path::PathBuf,
+};
 
 use crate::progbase;
 
@@ -12,7 +17,7 @@ struct FileStorage<T> {
     filename: PathBuf,
 }
 
-impl<T: for<'de> Deserialize<'de>> FileStorage<T> {
+impl<T: for<'de> Deserialize<'de> + Serialize> FileStorage<T> {
     fn new(path: &PathBuf) -> Self {
         if let Some(parent) = path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
@@ -28,12 +33,21 @@ impl<T: for<'de> Deserialize<'de>> FileStorage<T> {
             .write(true)
             .create(true)
             .open(path)
-            .unwrap_or_else(|e| panic!("Error: {} Failed to create or open file: {}", e, path.display()));
-        let mut file_content  = String::new();
-        file.read_to_string(&mut file_content);
-        let deserialized_value: T = serde_json::from_str(&file_content)
-            .unwrap_or_else(|e| panic!("Error: {} Failed to parse file contents: {}", e, &file_content));
-
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Error: {} Failed to create or open file: {}",
+                    e,
+                    path.display()
+                )
+            });
+        let mut file_content = String::new();
+        let _ = file.read_to_string(&mut file_content);
+        let deserialized_value: T = serde_json::from_str(&file_content).unwrap_or_else(|e| {
+            panic!(
+                "Error: {} Failed to parse file contents: {}",
+                e, &file_content
+            )
+        });
 
         FileStorage {
             value: deserialized_value,
@@ -41,14 +55,29 @@ impl<T: for<'de> Deserialize<'de>> FileStorage<T> {
         }
     }
 
-    fn file(&self) -> &PathBuf {
+    fn to_json(&self) -> Result<String, Box<dyn Error>> {
+        serde_json::to_string(&self.value).map_err(|e| {
+            log!(target: &self.filename.to_str().unwrap(), Level::Warn,  "Error serializing to JSON: {}", e);
+            Box::new(e) as Box<dyn Error>
+        })
+    }
+
+    pub fn file(&self) -> &PathBuf {
         &self.filename
     }
 
-    fn set_value(&mut self, value: T) -> Result<(), Box<dyn Error>> {
-        // todo
-        self.value = value;
-        Ok(())
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub fn value_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+
+    fn set_changed(self) -> Result<(), Box<dyn Error>> {
+        let mut file = std::fs::File::open(self.file().as_path())?;
+        file.write_all(self.to_json()?.as_bytes())
+            .map_err(|e| Box::new(e) as Box<dyn Error>)
     }
 }
 
