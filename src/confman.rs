@@ -7,10 +7,62 @@ use std::{
     error::Error,
     fs,
     io::{Read, Write},
+    ops::Deref,
+    ops::DerefMut,
     path::PathBuf,
 };
 
 use crate::progbase;
+
+pub trait ChangeTrait {
+    fn set_changed(&mut self) -> Result<(), Box<dyn Error>>;
+}
+
+pub struct Change<'a, OwnerT>
+where
+    OwnerT: ChangeTrait,
+{
+    owner: &'a mut OwnerT,
+}
+
+impl<'a, OwnerT> Change<'a, OwnerT>
+where
+    OwnerT: ChangeTrait,
+{
+    pub fn new(owner: &'a mut OwnerT) -> Self {
+        Self { owner }
+    }
+}
+
+impl<'a, OwnerT> Drop for Change<'a, OwnerT>
+where
+    OwnerT: ChangeTrait,
+{
+    fn drop(&mut self) {
+        self.owner.set_changed();
+    }
+}
+
+// Implement DerefMut to allow mutable access to the underlying owner value
+impl<'a, OwnerT> Deref for Change<'a, OwnerT>
+where
+    OwnerT: ChangeTrait,
+{
+    type Target = OwnerT;
+
+    fn deref(&self) -> &Self::Target {
+        self.owner
+    }
+}
+
+impl<'a, OwnerT> DerefMut for Change<'a, OwnerT>
+where
+    OwnerT: ChangeTrait,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.owner
+    }
+}
 
 struct FileStorage<T> {
     value: T,
@@ -74,10 +126,20 @@ impl<T: for<'de> Deserialize<'de> + Serialize> FileStorage<T> {
         &mut self.value
     }
 
-    fn set_changed(self) -> Result<(), Box<dyn Error>> {
+    pub fn save_to_file(self) -> Result<(), Box<dyn Error>> {
         let mut file = std::fs::File::open(self.file().as_path())?;
         file.write_all(self.to_json()?.as_bytes())
             .map_err(|e| Box::new(e) as Box<dyn Error>)
+    }
+
+    pub fn make_change(&mut self) -> Change<Self> {
+        Change::new(self)
+    }
+}
+
+impl<T: for<'de> Deserialize<'de> + Serialize> ChangeTrait for FileStorage<T> {
+    fn set_changed(&mut self) -> Result<(), Box<dyn Error>> {
+        self.save_to_file()
     }
 }
 
