@@ -12,6 +12,7 @@ use std::{
     ops::DerefMut,
     path::PathBuf,
 };
+use zbus::{connection, interface};
 
 use crate::progbase;
 
@@ -73,6 +74,15 @@ impl<T: for<'de> Deserialize<'de> + Serialize + Default> ChangeTrait<T> for Conf
     }
     fn key(&self) -> &str {
         &self.key
+    }
+}
+
+struct ConfManClient {}
+#[interface(name = "is.centroid.Config")]
+impl ConfManClient {
+    #[zbus(property)]
+    async fn value(&self) -> &str {
+        "fooo"
     }
 }
 
