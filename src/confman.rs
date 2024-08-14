@@ -8,6 +8,8 @@ use std::{
     fs,
     io::{Read, Write},
     marker::PhantomData,
+    ops::Deref,
+    ops::DerefMut,
     path::PathBuf,
 };
 
@@ -63,6 +65,9 @@ impl<T: for<'de> Deserialize<'de> + Serialize + Default> ChangeTrait<T> for Conf
     fn set_changed(&mut self) -> Result<(), Box<dyn Error>> {
         self.storage.set_changed()
     }
+    fn value(&self) -> &T {
+        self.storage.value()
+    }
     fn value_mut(&mut self) -> &mut T {
         self.storage.value_mut()
     }
@@ -73,6 +78,7 @@ impl<T: for<'de> Deserialize<'de> + Serialize + Default> ChangeTrait<T> for Conf
 
 trait ChangeTrait<T> {
     fn set_changed(&mut self) -> Result<(), Box<dyn Error>>;
+    fn value(&self) -> &T;
     fn value_mut(&mut self) -> &mut T;
     fn key(&self) -> &str;
 }
@@ -108,6 +114,26 @@ where
         if let Err(e) = self.owner.set_changed() {
             log!(target: self.owner.key(), Level::Warn,  "Error changing value: {}", e);
         }
+    }
+}
+
+impl<'a, OwnerT, T> Deref for Change<'a, OwnerT, T>
+where
+    OwnerT: ChangeTrait<T>,
+{
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.owner.value()
+    }
+}
+
+impl<'a, OwnerT, T> DerefMut for Change<'a, OwnerT, T>
+where
+    OwnerT: ChangeTrait<T>,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.owner.value_mut()
     }
 }
 
@@ -221,6 +247,9 @@ impl<T: for<'de> Deserialize<'de> + Serialize + Default> ChangeTrait<T> for File
     fn set_changed(&mut self) -> Result<(), Box<dyn Error>> {
         self.save_to_file()
     }
+    fn value(&self) -> &T {
+        self.value()
+    }
     fn value_mut(&mut self) -> &mut T {
         self.value_mut()
     }
@@ -262,14 +291,25 @@ mod tests {
         StructVariant { floats: Vec<f32> },
     }
 
-    #[test]
-    fn struct_test() {
+    fn setup() {
         let current_dir = std::env::current_dir().expect("Failed to get current directory");
         let current_dir_str = current_dir
             .to_str()
             .expect("Failed to convert path to string");
         std::env::set_var("CONFIGURATION_DIRECTORY", current_dir_str);
+    }
+    #[test]
+    fn struct_test() {
+        setup();
         let config: ConfMan<MyStruct> = ConfMan::new("key");
         assert_eq!(config.value().my_int, 5);
+    }
+
+    #[test]
+    fn change_param() {
+        setup();
+        let mut config: ConfMan<MyStruct> = ConfMan::new("key");
+        config.make_change().my_int = 42; // Using DerefMut, this is pretty hidden feature but shortens code
+        assert_eq!(config.value().my_int, 42);
     }
 }
