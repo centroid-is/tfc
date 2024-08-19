@@ -132,11 +132,11 @@ pub fn make_config_file_name(filename: &str, extension: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
     fn progbase_test() {
-        println!("Program started with ID: {}", progbase::proc_name());
-        println!(
-            "Config directory: {}",
-            progbase::config_directory().display()
-        );
+        println!("Program started with ID: {}", proc_name());
+        println!("Config directory: {}", config_directory().display());
     }
 }

@@ -8,13 +8,170 @@ use std::{
     fs,
     io::{Read, Write},
     marker::PhantomData,
-    ops::{Deref, DerefMut},
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
 };
 use zbus::interface;
 
 use crate::progbase;
+
+/// `ConfMan<T>` is a configuration management struct designed to handle
+/// the loading, updating, and saving of configuration data stored in JSON files.
+/// It is generic over the type `T`, which represents the structure of the configuration data.
+///
+/// # D-Bus Interface
+///
+/// `ConfMan` integrates with the D-Bus system using `zbus`. The D-Bus interface
+/// for `ConfMan` is defined as follows:
+///
+/// - **Interface Name**: `is.centroid.Config`
+///
+/// - **Properties**:
+///   - `Value` (read/write): Represents the current configuration as a JSON string.
+///     - **Getter**: Retrieves the current configuration serialized as a JSON string.
+///     - **Setter**: Updates the configuration from a JSON string.
+///     - **D-Bus Example**:
+///       - Get Property: `busctl get-property is.centroid.<progbase::exe_name()>.<progbase::proc_name()> /is/centroid/Config/<key> is.centroid.Config Value`
+///       - Set Property: `busctl set-property is.centroid.<progbase::exe_name()>.<progbase::proc_name()> /is/centroid/Config/<key> is.centroid.Config Value s "new_value"`
+///
+///   - `Schema` (read-only): Represents the JSON schema of the configuration structure.
+///     - **Getter**: Retrieves the JSON schema of the configuration.
+///     - **D-Bus Example**:
+///       - Get Property: `busctl get-property is.centroid.<progbase::exe_name()>.<progbase::proc_name()> /is/centroid/Config/<key> is.centroid.Config Schema`
+///
+/// # Example Usage
+/// ```rust
+/// #[derive(Deserialize, Serialize, JsonSchema, Default)]
+/// struct MyConfig {
+///    count: u64,
+/// }
+/// use zbus::Connection;
+///     let _conn = connection::Builder::session()?
+///    .name(format!(
+///        "is.centroid.{}.{}",
+///        progbase::exe_name(),
+///        progbase::proc_name()
+///    ))?
+///    .build()
+///    .await?;
+/// let config_manager = ConfMan::<MyConfig>::new(_conn.clone(), "my_config_key");
+/// // Use `config_manager` to manage your configuration
+/// ```
+///
+/// The `ConfMan` struct and its D-Bus interface provide a convenient way to
+/// manage configuration files that can be accessed and modified both programmatically
+/// and over D-Bus.
+pub struct ConfMan<T> {
+    storage: Arc<FileStorage<T>>,
+    log_key: String,
+}
+
+impl<
+        'a,
+        T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sync + 'static,
+    > ConfMan<T>
+{
+    /// Creates a new `ConfMan` instance, initializes it with a configuration file,
+    /// and registers it with the `zbus` object server.
+    ///
+    /// # Parameters
+    /// - `bus`: A `zbus::Connection` representing the connection to the D-Bus.
+    /// - `key`: A string slice representing the unique identifier for the configuration file.
+    ///
+    /// # Returns
+    /// A new `ConfMan<T>` instance.
+    pub fn new(bus: zbus::Connection, key: &str) -> Self {
+        let storage = Arc::new(FileStorage::<T>::new(&progbase::make_config_file_name(
+            key, "json",
+        )));
+        let client = ConfManClient::new(Arc::clone(&storage), key);
+        let path = format!("/is/centroid/Config/{}", key);
+        tokio::spawn(async move {
+            // log if error
+            let _ =
+                bus.object_server().at(path, client).await.map_err(
+                    |e| log!(target: "ZBUS", Level::Error, "Error registering object: {}", e),
+                );
+        });
+
+        ConfMan {
+            storage,
+            log_key: key.to_string(),
+        }
+    }
+
+    /// Creates a new `ConfMan` instance for testing purposes.
+    ///
+    /// # Parameters
+    /// - `key`: A string slice representing the unique identifier for the configuration file.
+    ///
+    /// # Returns
+    /// A new `ConfMan<T>` instance for testing.
+    #[cfg(test)]
+    pub fn new_test(key: &str) -> Self {
+        let storage = Arc::new(FileStorage::<T>::new(&progbase::make_config_file_name(
+            key, "json",
+        )));
+        ConfMan {
+            storage,
+            log_key: key.to_string(),
+        }
+    }
+
+    /// Returns a mutex guard to the configuration value.
+    ///
+    /// # Returns
+    /// A `MutexGuard` to the inner value of the configuration.
+    pub fn value(&self) -> MutexGuard<'_, T> {
+        self.storage.value()
+    }
+
+    /// Creates a new `Change` object to modify the configuration.
+    ///
+    /// # Returns
+    /// A `Change<Self, T>` instance used for making modifications to the configuration.
+    pub fn make_change(&mut self) -> Change<Self, T> {
+        Change::new(self)
+    }
+
+    /// Serializes the configuration to a JSON string.
+    ///
+    /// # Returns
+    /// A `Result` containing the JSON string or an error if serialization fails.
+    pub fn to_json(&self) -> Result<String, Box<dyn Error>> {
+        self.storage.to_json()
+    }
+
+    /// Deserializes a JSON string and updates the configuration.
+    ///
+    /// # Parameters
+    /// - `value`: A string slice representing the JSON data to deserialize.
+    ///
+    /// # Returns
+    /// A `Result` indicating success or failure.
+    pub fn from_json(&mut self, value: &str) -> Result<(), Box<dyn Error>> {
+        let deserialized_value: T = serde_json::from_str(value)?;
+        let mut value = self.storage.value.lock().unwrap();
+        *value = deserialized_value;
+        Ok(())
+    }
+
+    /// Returns the JSON schema of the configuration.
+    ///
+    /// # Returns
+    /// A `Result` containing the JSON schema as a string or an error if serialization fails.
+    pub fn schema(&self) -> Result<String, Box<dyn Error>> {
+        self.storage.schema()
+    }
+
+    /// Returns the file path associated with the configuration.
+    ///
+    /// # Returns
+    /// A reference to the `PathBuf` representing the configuration file path.
+    pub fn file(&self) -> &PathBuf {
+        self.storage.file()
+    }
+}
 
 struct ConfManClient<T> {
     storage: Arc<FileStorage<T>>,
@@ -62,64 +219,6 @@ impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sy
             log!(target: &self.log_key, Level::Error, "{}", err_msg);
             zbus::fdo::Error::Failed(err_msg)
         })
-    }
-}
-
-pub struct ConfMan<T> {
-    storage: Arc<FileStorage<T>>,
-    log_key: String,
-}
-
-impl<
-        'a,
-        T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sync + 'static,
-    > ConfMan<T>
-{
-    pub fn new(bus: zbus::Connection, key: &str) -> Self {
-        let storage = Arc::new(FileStorage::<T>::new(&progbase::make_config_file_name(
-            key, "json",
-        )));
-        let client = ConfManClient::new(Arc::clone(&storage), key);
-        let path = format!("/is/centroid/Config/{}", key);
-        tokio::spawn(async move {
-            // log if error
-            let _ =
-                bus.object_server().at(path, client).await.map_err(
-                    |e| log!(target: "ZBUS", Level::Error, "Error registering object: {}", e),
-                );
-        });
-
-        ConfMan {
-            storage,
-            log_key: key.to_string(),
-        }
-    }
-
-    pub fn value(&self) -> MutexGuard<'_, T> {
-        self.storage.value()
-    }
-
-    pub fn make_change(&mut self) -> Change<Self, T> {
-        Change::new(self)
-    }
-
-    pub fn to_json(&self) -> Result<String, Box<dyn Error>> {
-        self.storage.to_json()
-    }
-
-    pub fn from_json(&mut self, value: &str) -> Result<(), Box<dyn Error>> {
-        let deserialized_value: T = serde_json::from_str(value)?;
-        let mut value = self.storage.value.lock().unwrap();
-        *value = deserialized_value;
-        Ok(())
-    }
-
-    pub fn schema(&self) -> Result<String, Box<dyn Error>> {
-        self.storage.schema()
-    }
-
-    pub fn file(&self) -> &PathBuf {
-        self.storage.file()
     }
 }
 
@@ -176,26 +275,6 @@ where
         }
     }
 }
-
-// impl<'a, OwnerT, T> Deref for Change<'a, OwnerT, T>
-// where
-//     OwnerT: ChangeTrait<T>,
-// {
-//     type Target = T;
-
-//     fn deref(&self) -> &Self::Target {
-//         self.owner.value()
-//     }
-// }
-
-// impl<'a, OwnerT, T> DerefMut for Change<'a, OwnerT, T>
-// where
-//     OwnerT: ChangeTrait<T>,
-// {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         self.owner.value_mut()
-//     }
-// }
 
 struct FileStorage<T> {
     value: Mutex<T>,
@@ -369,15 +448,16 @@ mod tests {
     #[test]
     fn struct_test() {
         setup();
-        let config: ConfMan<MyStruct> = ConfMan::new("key");
+        let config: ConfMan<MyStruct> = ConfMan::new_test("key1");
         assert_eq!(config.value().my_int, 5);
     }
 
-    // #[test]
-    // fn change_param() {
-    //     setup();
-    //     let mut config: ConfMan<MyStruct> = ConfMan::new("key");
-    //     config.make_change().my_int = 42; // Using DerefMut, this is pretty hidden feature but shortens code
-    //     assert_eq!(config.value().my_int, 42);
-    // }
+    #[test]
+    fn change_param() {
+        setup();
+        let mut config: ConfMan<MyStruct> = ConfMan::new_test("key");
+        // TODO can we use DerefMut instead of value_mut?
+        config.make_change().value_mut().my_int = 42;
+        assert_eq!(config.value().my_int, 42);
+    }
 }

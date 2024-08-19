@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("End");
 
-    let _config = ConfMan::<Greeter>::new(_conn.clone(), "greeter");
+    let _config = ConfMan::<Greeter>::new(_conn.clone(), "greeterfu_u");
 
     // Do other things or go to wait forever
     pending::<()>().await;
