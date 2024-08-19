@@ -17,42 +17,65 @@ use zbus::interface;
 
 use crate::progbase;
 
-// Could ConfManClient take ownership of the FileStorage and give the accessor to it as well as expose it as dbus
 struct ConfManClient<T> {
-    // how about using Arc here
     storage: Arc<FileStorage<T>>,
+    log_key: String,
 }
 
 impl<T> ConfManClient<T> {
-    pub fn new(storage: Arc<FileStorage<T>>) -> Self {
-        Self { storage }
+    pub fn new(storage: Arc<FileStorage<T>>, key: &str) -> Self {
+        Self {
+            storage,
+            log_key: key.to_string(),
+        }
     }
 
-    // Example of using the closures
-    pub fn value(&self) {
-        // let current_value = self.storage.to_json();
-        println!("Current configuration:"); // {}", current_value.expect("damn it"));
+    // // Example of using the closures
+    // pub fn value(&self) {
+    //     // let current_value = self.storage.to_json();
+    //     println!("Current configuration:"); // {}", current_value.expect("damn it"));
+    // }
+}
+#[interface(name = "is.centroid.Config")]
+impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sync + 'static>
+    ConfManClient<T>
+{
+    #[zbus(property)]
+    async fn value(&self) -> Result<String, zbus::fdo::Error> {
+        self.storage.to_json().map_err(|e| {
+            let err_msg = format!("Error serializing to JSON: {}", e);
+            log!(target: &self.log_key, Level::Error, "{}", err_msg);
+            zbus::fdo::Error::Failed(err_msg)
+        })
+    }
+    //busctl --user set-property is.centroid.framework-rs.def /is/centroid/Config/greeter is.centroid.Config Value s "new_value"
+    //Failed to set property Value on interface is.centroid.Config: Failed to deserialize JSON: new_value. Error: expected ident at line 1 column 2
+    #[zbus(property)]
+    async fn set_value(&mut self, new_value: String) -> Result<(), zbus::fdo::Error> {
+        let deserialized = serde_json::from_str(new_value.as_str());
+        if let Err(e) = deserialized {
+            let err_msg = format!("Failed to deserialize JSON: {}. Error: {}", new_value, e);
+            log!(target: &self.log_key, Level::Error, "{}", err_msg);
+            return Err(zbus::fdo::Error::InvalidArgs(err_msg));
+        }
+        let foo = deserialized.unwrap();
+        Arc::get_mut(&mut self.storage).unwrap().value = foo;
+        Ok(())
+    }
+    #[zbus(property)]
+    async fn schema(&self) -> Result<String, zbus::fdo::Error> {
+        self.storage.schema().map_err(|e| {
+            let err_msg = format!("Error serializing to JSON schema: {}", e);
+            log!(target: &self.log_key, Level::Error, "{}", err_msg);
+            zbus::fdo::Error::Failed(err_msg)
+        })
     }
 }
 
 pub struct ConfMan<T> {
     storage: Arc<FileStorage<T>>,
-    key: String,
-    bus: zbus::Connection,
-    client: ConfManClient<T>,
+    log_key: String,
 }
-
-// // #[interface(name = "is.centroid.Config")]
-// impl<
-//         'a,
-//         T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sync + 'static,
-//     > ConfMan<'a, T>
-// {
-//     // #[zbus(property)]
-//     fn value_dbus(&self) -> &str {
-//         "self.to_json()"
-//     }
-// }
 
 // #[interface(name = "is.centroid.Config")]
 impl<
@@ -61,34 +84,23 @@ impl<
     > ConfMan<T>
 {
     pub fn new(bus: zbus::Connection, key: &str) -> Self {
-        // let storage = Arc::new();
-        // let client = ConfManClient {
-        //     storage: Arc::clone(&storage),
-        // };
-        // ConfMan {
-        //     storage: FileStorage::<T>::new(&progbase::make_config_file_name(key, "json")),
-        //     key: key.to_string(),
-        //     bus,
-        //     // client,
-        // }
         let storage = Arc::new(FileStorage::<T>::new(&progbase::make_config_file_name(
             key, "json",
         )));
+        let client = ConfManClient::new(Arc::clone(&storage), key);
+        let path = format!("/is/centroid/Config/{}", key);
+        tokio::spawn(async move {
+            // log if error
+            let _ =
+                bus.object_server().at(path, client).await.map_err(
+                    |e| log!(target: "ZBUS", Level::Error, "Error registering object: {}", e),
+                );
+        });
+
         ConfMan {
             storage: Arc::clone(&storage),
-            key: key.to_string(),
-            bus,
-            client: ConfManClient::new(Arc::clone(&storage)),
+            log_key: key.to_string(),
         }
-
-        // conf_man.client = Some(ConfManClient::new(&mut conf_man.storage));
-
-        // conf_man
-        //     .bus
-        //     .object_server()
-        //     .at(format!("/is/centroid/Config/{}", key), conf_man);
-
-        // conf_man
     }
 
     pub fn value(&self) -> &T {
@@ -100,21 +112,19 @@ impl<
     }
 
     pub fn to_json(&self) -> Result<String, Box<dyn Error>> {
-        serde_json::to_string(self.value()).map_err(|e| {
-            log!(target: &self.key, Level::Warn,  "Error serializing to JSON: {}", e);
-            Box::new(e) as Box<dyn Error>
-        })
+        self.storage.to_json()
     }
 
     pub fn from_json(&mut self, value: &str) -> Result<(), Box<dyn Error>> {
         // todo can we do this more safely and still keep the same interface
         let deserialized_value: T = serde_json::from_str(value)?;
         Arc::get_mut(&mut self.storage).unwrap().value = deserialized_value;
+        // *self.storage.make_change().value_mut() = deserialized_value;
         Ok(())
     }
 
-    pub fn schema(&self) -> String {
-        serde_json::to_string_pretty(&schemars::schema_for!(T)).unwrap()
+    pub fn schema(&self) -> Result<String, Box<dyn Error>> {
+        self.storage.schema()
     }
 
     pub fn file(&self) -> &PathBuf {
@@ -122,7 +132,9 @@ impl<
     }
 }
 
-impl<T: for<'de> Deserialize<'de> + Serialize + Default> ChangeTrait<T> for ConfMan<T> {
+impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> ChangeTrait<T>
+    for ConfMan<T>
+{
     fn set_changed(&mut self) -> Result<(), Box<dyn Error>> {
         // todo can we do this more safely and still keep the same interface
         Arc::get_mut(&mut self.storage).unwrap().set_changed()
@@ -137,7 +149,7 @@ impl<T: for<'de> Deserialize<'de> + Serialize + Default> ChangeTrait<T> for Conf
         // self.storage.value_mut()
     }
     fn key(&self) -> &str {
-        &self.key
+        &self.log_key
     }
 }
 
@@ -205,9 +217,10 @@ where
 struct FileStorage<T> {
     value: T,
     filename: PathBuf,
+    log_key: String,
 }
 
-impl<T: for<'de> Deserialize<'de> + Serialize + Default> FileStorage<T> {
+impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> FileStorage<T> {
     fn new(path: &PathBuf) -> Self {
         if let Some(parent) = path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
@@ -251,12 +264,20 @@ impl<T: for<'de> Deserialize<'de> + Serialize + Default> FileStorage<T> {
         FileStorage {
             value: deserialized_value,
             filename: path.clone(),
+            log_key: path.to_str().unwrap().to_string(),
         }
     }
 
     fn to_json(&self) -> Result<String, Box<dyn Error>> {
         serde_json::to_string(&self.value).map_err(|e| {
-            log!(target: &self.filename.to_str().unwrap(), Level::Warn,  "Error serializing to JSON: {}", e);
+            log!(target: &self.log_key, Level::Warn,  "Error serializing to JSON: {}", e);
+            Box::new(e) as Box<dyn Error>
+        })
+    }
+
+    fn schema(&self) -> Result<String, Box<dyn Error>> {
+        serde_json::to_string_pretty(&schemars::schema_for!(T)).map_err(|e| {
+            log!(target: &self.log_key, Level::Warn,  "Error serializing to JSON Schema: {}", e);
             Box::new(e) as Box<dyn Error>
         })
     }
@@ -308,7 +329,9 @@ impl<T: for<'de> Deserialize<'de> + Serialize + Default> FileStorage<T> {
     }
 }
 
-impl<T: for<'de> Deserialize<'de> + Serialize + Default> ChangeTrait<T> for FileStorage<T> {
+impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> ChangeTrait<T>
+    for FileStorage<T>
+{
     fn set_changed(&mut self) -> Result<(), Box<dyn Error>> {
         self.save_to_file()
     }
