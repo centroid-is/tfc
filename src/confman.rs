@@ -86,12 +86,14 @@ impl<
         )));
         let client = ConfManClient::new(Arc::clone(&storage), key);
         let path = format!("/is/centroid/Config/{}", key);
+        let log_key = key.to_string();
         tokio::spawn(async move {
             // log if error
-            let _ =
-                bus.object_server().at(path, client).await.map_err(
-                    |e| log!(target: "ZBUS", Level::Error, "Error registering object: {}", e),
-                );
+            let _ = bus
+                .object_server()
+                .at(path, client)
+                .await
+                .expect(&format!("Error registering object: {}", log_key));
         });
 
         ConfMan {
