@@ -11,30 +11,24 @@ use std::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
     path::PathBuf,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, Weak},
 };
 use zbus::interface;
 
 use crate::progbase;
 
 struct ConfManClient<T> {
-    storage: Arc<FileStorage<T>>,
+    storage: Weak<FileStorage<T>>,
     log_key: String,
 }
 
 impl<T> ConfManClient<T> {
-    pub fn new(storage: Arc<FileStorage<T>>, key: &str) -> Self {
+    pub fn new(storage: Weak<FileStorage<T>>, key: &str) -> Self {
         Self {
             storage,
             log_key: key.to_string(),
         }
     }
-
-    // // Example of using the closures
-    // pub fn value(&self) {
-    //     // let current_value = self.storage.to_json();
-    //     println!("Current configuration:"); // {}", current_value.expect("damn it"));
-    // }
 }
 #[interface(name = "is.centroid.Config")]
 impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sync + 'static>
@@ -42,7 +36,8 @@ impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sy
 {
     #[zbus(property)]
     async fn value(&self) -> Result<String, zbus::fdo::Error> {
-        self.storage.to_json().map_err(|e| {
+        let storage = self.storage.upgrade().unwrap();
+        storage.to_json().map_err(|e| {
             let err_msg = format!("Error serializing to JSON: {}", e);
             log!(target: &self.log_key, Level::Error, "{}", err_msg);
             zbus::fdo::Error::Failed(err_msg)
@@ -59,12 +54,14 @@ impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sy
             return Err(zbus::fdo::Error::InvalidArgs(err_msg));
         }
         let foo = deserialized.unwrap();
-        Arc::get_mut(&mut self.storage).unwrap().value = foo;
+        let mut storage = self.storage.upgrade().unwrap();
+        Arc::get_mut(&mut storage).unwrap().value = foo;
         Ok(())
     }
     #[zbus(property)]
     async fn schema(&self) -> Result<String, zbus::fdo::Error> {
-        self.storage.schema().map_err(|e| {
+        let storage = self.storage.upgrade().unwrap();
+        storage.schema().map_err(|e| {
             let err_msg = format!("Error serializing to JSON schema: {}", e);
             log!(target: &self.log_key, Level::Error, "{}", err_msg);
             zbus::fdo::Error::Failed(err_msg)
@@ -77,7 +74,6 @@ pub struct ConfMan<T> {
     log_key: String,
 }
 
-// #[interface(name = "is.centroid.Config")]
 impl<
         'a,
         T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sync + 'static,
@@ -87,7 +83,7 @@ impl<
         let storage = Arc::new(FileStorage::<T>::new(&progbase::make_config_file_name(
             key, "json",
         )));
-        let client = ConfManClient::new(Arc::clone(&storage), key);
+        let client = ConfManClient::new(Arc::downgrade(&storage), key);
         let path = format!("/is/centroid/Config/{}", key);
         tokio::spawn(async move {
             // log if error
@@ -98,7 +94,7 @@ impl<
         });
 
         ConfMan {
-            storage: Arc::clone(&storage),
+            storage,
             log_key: key.to_string(),
         }
     }
