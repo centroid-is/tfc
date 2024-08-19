@@ -4,28 +4,27 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{
+    borrow::BorrowMut,
     error::Error,
     fs,
     io::{Read, Write},
     marker::PhantomData,
-    ops::Deref,
-    ops::DerefMut,
+    ops::{Deref, DerefMut},
     path::PathBuf,
-    sync::Arc,
-    sync::Mutex,
+    sync::{Arc, Mutex, RwLock},
 };
 use zbus::interface;
 
 use crate::progbase;
 
 // Could ConfManClient take ownership of the FileStorage and give the accessor to it as well as expose it as dbus
-struct ConfManClient<'a, T> {
+struct ConfManClient<T> {
     // how about using Arc here
-    storage: &'a mut FileStorage<T>,
+    storage: Arc<FileStorage<T>>,
 }
 
-impl<'a, T> ConfManClient<'a, T> {
-    pub fn new(storage: &'a mut FileStorage<T>) -> Self {
+impl<T> ConfManClient<T> {
+    pub fn new(storage: Arc<FileStorage<T>>) -> Self {
         Self { storage }
     }
 
@@ -36,11 +35,11 @@ impl<'a, T> ConfManClient<'a, T> {
     }
 }
 
-pub struct ConfMan<'a, T> {
-    storage: FileStorage<T>,
+pub struct ConfMan<T> {
+    storage: Arc<FileStorage<T>>,
     key: String,
     bus: zbus::Connection,
-    client: Option<ConfManClient<'a, T>>,
+    client: ConfManClient<T>,
 }
 
 // // #[interface(name = "is.centroid.Config")]
@@ -59,7 +58,7 @@ pub struct ConfMan<'a, T> {
 impl<
         'a,
         T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sync + 'static,
-    > ConfMan<'a, T>
+    > ConfMan<T>
 {
     pub fn new(bus: zbus::Connection, key: &str) -> Self {
         // let storage = Arc::new();
@@ -72,21 +71,24 @@ impl<
         //     bus,
         //     // client,
         // }
-        let mut conf_man = ConfMan {
-            storage: FileStorage::<T>::new(&progbase::make_config_file_name(key, "json")),
+        let storage = Arc::new(FileStorage::<T>::new(&progbase::make_config_file_name(
+            key, "json",
+        )));
+        ConfMan {
+            storage: Arc::clone(&storage),
             key: key.to_string(),
             bus,
-            client: None,
-        };
+            client: ConfManClient::new(Arc::clone(&storage)),
+        }
 
-        conf_man.client = Some(ConfManClient::new(&mut conf_man.storage));
+        // conf_man.client = Some(ConfManClient::new(&mut conf_man.storage));
 
         // conf_man
         //     .bus
         //     .object_server()
         //     .at(format!("/is/centroid/Config/{}", key), conf_man);
 
-        conf_man
+        // conf_man
     }
 
     pub fn value(&self) -> &T {
@@ -105,8 +107,9 @@ impl<
     }
 
     pub fn from_json(&mut self, value: &str) -> Result<(), Box<dyn Error>> {
+        // todo can we do this more safely and still keep the same interface
         let deserialized_value: T = serde_json::from_str(value)?;
-        *self.storage.make_change().value_mut() = deserialized_value;
+        Arc::get_mut(&mut self.storage).unwrap().value = deserialized_value;
         Ok(())
     }
 
@@ -121,13 +124,17 @@ impl<
 
 impl<T: for<'de> Deserialize<'de> + Serialize + Default> ChangeTrait<T> for ConfMan<T> {
     fn set_changed(&mut self) -> Result<(), Box<dyn Error>> {
-        self.storage.set_changed()
+        // todo can we do this more safely and still keep the same interface
+        Arc::get_mut(&mut self.storage).unwrap().set_changed()
+        // self.storage.set_changed()
     }
     fn value(&self) -> &T {
         self.storage.value()
     }
     fn value_mut(&mut self) -> &mut T {
-        self.storage.value_mut()
+        // todo can we do this more safely and still keep the same interface
+        Arc::get_mut(&mut self.storage).unwrap().value_mut()
+        // self.storage.value_mut()
     }
     fn key(&self) -> &str {
         &self.key
