@@ -11,25 +11,82 @@ use std::{
     ops::Deref,
     ops::DerefMut,
     path::PathBuf,
+    sync::Arc,
+    sync::Mutex,
 };
-use zbus::{connection, interface};
+use zbus::interface;
 
 use crate::progbase;
 
-pub struct ConfMan<T> {
-    storage: FileStorage<T>,
-    key: String,
+// Could ConfManClient take ownership of the FileStorage and give the accessor to it as well as expose it as dbus
+struct ConfManClient<'a, T> {
+    // how about using Arc here
+    storage: &'a mut FileStorage<T>,
 }
 
-impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default> ConfMan<T> {
-    pub fn new(
-        // bus: zbus::Connection,
-        key: &str,
-    ) -> Self {
-        ConfMan {
+impl<'a, T> ConfManClient<'a, T> {
+    pub fn new(storage: &'a mut FileStorage<T>) -> Self {
+        Self { storage }
+    }
+
+    // Example of using the closures
+    pub fn value(&self) {
+        // let current_value = self.storage.to_json();
+        println!("Current configuration:"); // {}", current_value.expect("damn it"));
+    }
+}
+
+pub struct ConfMan<'a, T> {
+    storage: FileStorage<T>,
+    key: String,
+    bus: zbus::Connection,
+    client: Option<ConfManClient<'a, T>>,
+}
+
+// // #[interface(name = "is.centroid.Config")]
+// impl<
+//         'a,
+//         T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sync + 'static,
+//     > ConfMan<'a, T>
+// {
+//     // #[zbus(property)]
+//     fn value_dbus(&self) -> &str {
+//         "self.to_json()"
+//     }
+// }
+
+// #[interface(name = "is.centroid.Config")]
+impl<
+        'a,
+        T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sync + 'static,
+    > ConfMan<'a, T>
+{
+    pub fn new(bus: zbus::Connection, key: &str) -> Self {
+        // let storage = Arc::new();
+        // let client = ConfManClient {
+        //     storage: Arc::clone(&storage),
+        // };
+        // ConfMan {
+        //     storage: FileStorage::<T>::new(&progbase::make_config_file_name(key, "json")),
+        //     key: key.to_string(),
+        //     bus,
+        //     // client,
+        // }
+        let mut conf_man = ConfMan {
             storage: FileStorage::<T>::new(&progbase::make_config_file_name(key, "json")),
             key: key.to_string(),
-        }
+            bus,
+            client: None,
+        };
+
+        conf_man.client = Some(ConfManClient::new(&mut conf_man.storage));
+
+        // conf_man
+        //     .bus
+        //     .object_server()
+        //     .at(format!("/is/centroid/Config/{}", key), conf_man);
+
+        conf_man
     }
 
     pub fn value(&self) -> &T {
@@ -74,15 +131,6 @@ impl<T: for<'de> Deserialize<'de> + Serialize + Default> ChangeTrait<T> for Conf
     }
     fn key(&self) -> &str {
         &self.key
-    }
-}
-
-struct ConfManClient {}
-#[interface(name = "is.centroid.Config")]
-impl ConfManClient {
-    #[zbus(property)]
-    async fn value(&self) -> &str {
-        "fooo"
     }
 }
 

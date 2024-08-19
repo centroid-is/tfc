@@ -48,12 +48,24 @@ pub fn init_combined_logger() -> Result<(), SetLoggerError> {
     INIT.call_once(|| {
         let env_logger: env_logger::Logger =
             env_logger::Builder::from_env(env_logger::Env::default())
-                .filter_level(if progbase::stdout() { progbase::log_lvl() } else { log::LevelFilter::Off })
+                .filter_level(if progbase::stdout() {
+                    progbase::log_lvl()
+                } else {
+                    log::LevelFilter::Off
+                })
                 .build();
-            
-        let journal_logger = JournalLog::new().unwrap()
-            .with_extra_fields(vec![("TFC_EXE", progbase::exe_name()), ("TFC_ID", progbase::proc_name())])
-            .with_syslog_identifier(format!("{}.{}", progbase::exe_name(), progbase::proc_name()));
+
+        let journal_logger = JournalLog::new()
+            .unwrap()
+            .with_extra_fields(vec![
+                ("TFC_EXE", progbase::exe_name()),
+                ("TFC_ID", progbase::proc_name()),
+            ])
+            .with_syslog_identifier(format!(
+                "{}.{}",
+                progbase::exe_name(),
+                progbase::proc_name()
+            ));
         log::set_max_level(progbase::log_lvl());
 
         let combined_logger = CombinedLogger {
@@ -66,4 +78,27 @@ pub fn init_combined_logger() -> Result<(), SetLoggerError> {
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::init_combined_logger;
+    use crate::progbase;
+    use log::{log, Level};
+
+    fn log_test() {
+        progbase::init();
+        let _ = init_combined_logger();
+        log!(target: "TFC_KEY1", Level::Trace, "This is a trace message");
+        log!(target: "TFC_KEY2", Level::Debug, "This is a debug message");
+        log!(target: "TFC_KEY3", Level::Info, "This is a info message");
+        log!(target: "TFC_KEY4", Level::Warn, "This is a warn message");
+        log!(target: "TFC_KEY5", Level::Error, "This is a error message");
+
+        log!(target: "TFC_KEY1", Level::Trace, "This is a {} trace message with {} args", 42, "foo");
+        log!(target: "TFC_KEY1", Level::Debug, "This is a debug {} {} message with args", 42, "foo");
+        log!(target: "TFC_KEY1", Level::Info, "{} This is an {} info message with args", 42, "foo");
+        log!(target: "TFC_KEY1", Level::Warn, "This is a {} warn message {} with args", 42, "foo");
+        log!(target: "TFC_KEY1", Level::Error, "This is an {} error message with {} args", 42, "foo");
+    }
 }

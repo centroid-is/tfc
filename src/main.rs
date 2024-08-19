@@ -1,31 +1,52 @@
-mod progbase;
-mod logger;
 mod confman;
+mod logger;
+mod progbase;
 
-use log::{info, log, Level};
+use std::future::pending;
 
-fn main() {
+use confman::ConfMan;
+use log::{log, Level};
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use zbus::{connection, interface};
+
+#[derive(Deserialize, Serialize, JsonSchema, Default)]
+struct Greeter {
+    count: u64,
+}
+
+// #[interface(name = "org.zbus.MyGreeter1")]
+// impl Greeter {
+//     // Can be `async` as well.
+//     fn say_hello(&mut self, name: &str) -> String {
+//         self.count += 1;
+//         format!("Hello {}! I have been called {} times.", name, self.count)
+//     }
+// }
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Begin");
     progbase::init();
     let _ = logger::init_combined_logger();
 
-    log!(target: "TFC_KEY1", Level::Trace, "This is a trace message");
-    log!(target: "TFC_KEY2", Level::Debug, "This is a debug message");
-    log!(target: "TFC_KEY3", Level::Info, "This is a info message");
-    log!(target: "TFC_KEY4", Level::Warn, "This is a warn message");
-    log!(target: "TFC_KEY5", Level::Error, "This is a error message");
+    let _conn = connection::Builder::session()?
+        .name(format!(
+            "is.centroid.{}.{}",
+            progbase::exe_name(),
+            progbase::proc_name()
+        ))?
+        .build()
+        .await?;
 
-    log!(target: "TFC_KEY1", Level::Trace, "This is a {} trace message with {} args", 42, "foo");
-    log!(target: "TFC_KEY1", Level::Debug, "This is a debug {} {} message with args", 42, "foo");
-    log!(target: "TFC_KEY1", Level::Info, "{} This is an {} info message with args", 42, "foo");
-    log!(target: "TFC_KEY1", Level::Warn, "This is a {} warn message {} with args", 42, "foo");
-    log!(target: "TFC_KEY1", Level::Error, "This is an {} error message with {} args", 42, "foo");
-
-    info!("Program started with ID: {}", progbase::proc_name());
-    println!("Program started with ID: {}", progbase::proc_name());
-    println!(
-        "Config directory: {}",
-        progbase::config_directory().display()
-    );
     println!("End");
+
+    let _config = ConfMan::<Greeter>::new(_conn.clone(), "greeter");
+
+    // Do other things or go to wait forever
+    pending::<()>().await;
+
+    Ok(())
 }

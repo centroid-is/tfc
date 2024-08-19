@@ -1,11 +1,11 @@
 include!(concat!(env!("OUT_DIR"), "/version.rs"));
 
 use clap::Parser;
+use log::LevelFilter;
 use std::env;
 use std::path::PathBuf;
-use log::LevelFilter;
-use std::sync::{Arc, Mutex};
 use std::process::exit;
+use std::sync::{Arc, Mutex};
 
 #[derive(Parser)]
 pub struct Opts {
@@ -69,15 +69,15 @@ pub fn init() {
     let mut options = OPTIONS.lock().unwrap();
     let opts = Opts::parse();
     if opts.version {
-/*
-git@github.com:centroid-is/framework-rs.git
-Build date: 2024-08-05 18:26:11
-Commit date: 2024-08-05
-Branch: main
-Hash: 43aa4af47ee2c6aa269f10c9ff9e1cd3b1c1e259
-Tag:  - clean
-Author: Jón Bjarni Bjarnason <jon@centroid.is>
-*/
+        /*
+        git@github.com:centroid-is/framework-rs.git
+        Build date: 2024-08-05 18:26:11
+        Commit date: 2024-08-05
+        Branch: main
+        Hash: 43aa4af47ee2c6aa269f10c9ff9e1cd3b1c1e259
+        Tag:  - clean
+        Author: Jón Bjarni Bjarnason <jon@centroid.is>
+        */
         println!("{}", GIT_REPO);
         println!("Build date: {}", BUILD_DATE);
         println!("Commit date: {}", GIT_COMMIT_DATE);
@@ -91,13 +91,15 @@ Author: Jón Bjarni Bjarnason <jon@centroid.is>
 }
 
 #[allow(dead_code)]
-pub fn exe_name() -> String { // todo how to return std::string const&
+pub fn exe_name() -> String {
+    // todo how to return std::string const&
     let options = OPTIONS.lock().unwrap();
     options.exe.clone()
 }
 
 #[allow(dead_code)]
-pub fn proc_name() -> String { // todo samesies
+pub fn proc_name() -> String {
+    // todo samesies
     let options = OPTIONS.lock().unwrap();
     options.id.clone()
 }
@@ -122,7 +124,19 @@ pub fn config_directory() -> PathBuf {
 #[allow(dead_code)]
 pub fn make_config_file_name(filename: &str, extension: &str) -> PathBuf {
     let config_dir = config_directory();
-    config_dir.join(exe_name()).join(proc_name()).join(format!("{}.{}", filename, extension))
+    config_dir
+        .join(exe_name())
+        .join(proc_name())
+        .join(format!("{}.{}", filename, extension))
 }
 
-
+#[cfg(test)]
+mod tests {
+    fn progbase_test() {
+        println!("Program started with ID: {}", progbase::proc_name());
+        println!(
+            "Config directory: {}",
+            progbase::config_directory().display()
+        );
+    }
+}
