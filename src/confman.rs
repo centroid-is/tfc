@@ -9,7 +9,7 @@ use std::{
     io::{Read, Write},
     marker::PhantomData,
     path::PathBuf,
-    sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 use zbus::interface;
 
