@@ -175,6 +175,7 @@ impl<
     }
 }
 
+// ------------------ struct ConfManClient ------------------
 struct ConfManClient<T> {
     storage: Arc<FileStorage<T>>,
     log_key: String,
@@ -223,6 +224,13 @@ impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sy
         })
     }
 }
+// ------------------ trait ChangeTrait ------------------
+
+trait ChangeTrait<T> {
+    fn set_changed(&self) -> Result<(), Box<dyn Error>>;
+    fn value_mut(&self) -> RwLockWriteGuard<'_, T>;
+    fn key(&self) -> &str;
+}
 
 impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> ChangeTrait<T>
     for ConfMan<T>
@@ -238,11 +246,21 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> ChangeTrai
     }
 }
 
-trait ChangeTrait<T> {
-    fn set_changed(&self) -> Result<(), Box<dyn Error>>;
-    fn value_mut(&self) -> RwLockWriteGuard<'_, T>;
-    fn key(&self) -> &str;
+impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> ChangeTrait<T>
+    for FileStorage<T>
+{
+    fn set_changed(&self) -> Result<(), Box<dyn Error>> {
+        self.save_to_file()
+    }
+    fn value_mut(&self) -> RwLockWriteGuard<'_, T> {
+        self.value_mut()
+    }
+    fn key(&self) -> &str {
+        self.file().to_str().unwrap()
+    }
 }
+
+// ------------------ struct Change ------------------
 
 struct Change<'a, OwnerT, T>
 where
@@ -277,6 +295,8 @@ where
         }
     }
 }
+
+// ------------------ struct FileStorage ------------------
 
 struct FileStorage<T> {
     value: RwLock<T>,
@@ -390,20 +410,6 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> FileStorag
 
     fn make_change(&mut self) -> Change<Self, T> {
         Change::new(self)
-    }
-}
-
-impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> ChangeTrait<T>
-    for FileStorage<T>
-{
-    fn set_changed(&self) -> Result<(), Box<dyn Error>> {
-        self.save_to_file()
-    }
-    fn value_mut(&self) -> RwLockWriteGuard<'_, T> {
-        self.value_mut()
-    }
-    fn key(&self) -> &str {
-        self.file().to_str().unwrap()
     }
 }
 
