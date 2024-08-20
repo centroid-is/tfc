@@ -9,7 +9,7 @@ use std::{
     io::{Read, Write},
     marker::PhantomData,
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 use zbus::interface;
 
@@ -124,7 +124,7 @@ impl<
     ///
     /// # Returns
     /// A `MutexGuard` to the inner value of the configuration.
-    pub fn value(&self) -> MutexGuard<'_, T> {
+    pub fn value(&self) -> RwLockReadGuard<'_, T> {
         self.storage.value()
     }
 
@@ -153,7 +153,7 @@ impl<
     /// A `Result` indicating success or failure.
     pub fn from_json(&mut self, value: &str) -> Result<(), Box<dyn Error>> {
         let deserialized_value: T = serde_json::from_str(value)?;
-        let mut value = self.storage.value.lock().unwrap();
+        let mut value = self.storage.value_mut();
         *value = deserialized_value;
         Ok(())
     }
@@ -210,7 +210,7 @@ impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sy
             log!(target: &self.log_key, Level::Error, "{}", err_msg);
             return Err(zbus::fdo::Error::InvalidArgs(err_msg));
         }
-        let mut value = self.storage.value.lock().unwrap();
+        let mut value = self.storage.value_mut();
         *value = deserialized.unwrap();
         Ok(())
     }
@@ -230,8 +230,8 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> ChangeTrai
     fn set_changed(&self) -> Result<(), Box<dyn Error>> {
         self.storage.set_changed()
     }
-    fn value(&self) -> MutexGuard<'_, T> {
-        self.storage.value()
+    fn value_mut(&self) -> RwLockWriteGuard<'_, T> {
+        self.storage.value_mut()
     }
     fn key(&self) -> &str {
         &self.log_key
@@ -240,7 +240,7 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> ChangeTrai
 
 trait ChangeTrait<T> {
     fn set_changed(&self) -> Result<(), Box<dyn Error>>;
-    fn value(&self) -> MutexGuard<'_, T>;
+    fn value_mut(&self) -> RwLockWriteGuard<'_, T>;
     fn key(&self) -> &str;
 }
 
@@ -262,8 +262,8 @@ where
             _marker: PhantomData,
         }
     }
-    fn value_mut(&mut self) -> MutexGuard<'_, T> {
-        self.owner.value()
+    fn value_mut(&mut self) -> RwLockWriteGuard<'_, T> {
+        self.owner.value_mut()
     }
 }
 
@@ -279,7 +279,7 @@ where
 }
 
 struct FileStorage<T> {
-    value: Mutex<T>,
+    value: RwLock<T>,
     filename: PathBuf,
     log_key: String,
 }
@@ -326,7 +326,7 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> FileStorag
         });
 
         FileStorage {
-            value: Mutex::new(deserialized_value),
+            value: RwLock::new(deserialized_value),
             filename: path.clone(),
             log_key: path.to_str().unwrap().to_string(),
         }
@@ -350,12 +350,12 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> FileStorag
         &self.filename
     }
 
-    fn value(&self) -> std::sync::MutexGuard<'_, T> {
-        self.value.lock().unwrap()
+    fn value(&self) -> std::sync::RwLockReadGuard<'_, T> {
+        self.value.read().unwrap()
     }
 
-    fn value_mut(&mut self) -> std::sync::MutexGuard<'_, T> {
-        self.value.lock().unwrap()
+    fn value_mut(&self) -> std::sync::RwLockWriteGuard<'_, T> {
+        self.value.write().unwrap()
     }
 
     fn save_to_file(&self) -> Result<(), Box<dyn Error>> {
@@ -399,8 +399,8 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> ChangeTrai
     fn set_changed(&self) -> Result<(), Box<dyn Error>> {
         self.save_to_file()
     }
-    fn value(&self) -> MutexGuard<'_, T> {
-        self.value.lock().unwrap()
+    fn value_mut(&self) -> RwLockWriteGuard<'_, T> {
+        self.value_mut()
     }
     fn key(&self) -> &str {
         self.file().to_str().unwrap()
