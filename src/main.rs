@@ -1,4 +1,5 @@
 mod confman;
+mod ipc;
 mod logger;
 mod progbase;
 
