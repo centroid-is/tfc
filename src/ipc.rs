@@ -115,17 +115,31 @@ enum Version {
 }
 
 trait IsFundamental {}
-impl IsFundamental for bool {}
-impl IsFundamental for i64 {}
-impl IsFundamental for i32 {}
-impl IsFundamental for i16 {}
-impl IsFundamental for i8 {}
-impl IsFundamental for u64 {}
-impl IsFundamental for u32 {}
-impl IsFundamental for u16 {}
-impl IsFundamental for u8 {}
-impl IsFundamental for f64 {}
-impl IsFundamental for f32 {}
+macro_rules! impl_is_fundamental {
+    ($($t:ty),*) => {
+        $(
+            impl IsFundamental for $t {}
+        )*
+    };
+}
+impl_is_fundamental!(bool, i64, i32, i16, i8, u64, u32, u16, u8, f64, f32);
+
+trait ToLeBytesVec {
+    fn to_le_bytes_vec(&self) -> Vec<u8>;
+}
+macro_rules! impl_to_le_bytes_vec_for_fundamental {
+    ($($t:ty),*) => {
+        $(
+            impl ToLeBytesVec for $t {
+                fn to_le_bytes_vec(&self) -> Vec<u8> {
+                    self.to_le_bytes().to_vec()
+                }
+            }
+        )*
+    };
+}
+impl_to_le_bytes_vec_for_fundamental!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+
 trait SerializeSize {
     fn serialize_size(&self) -> usize;
 }
@@ -146,10 +160,85 @@ where
 {
     fn serialize_size(&self) -> usize {
         1 // Used to indicate whether the Result is Type or Error
-        + std::mem::size_of::<quantities::AmountT>() // todo global quantities::AmountT is not great, should be T::AmountT
-        + std::mem::size_of::<E>()
+            + if self.is_ok() { std::mem::size_of::<quantities::AmountT>() } else { std::mem::size_of::<E>() }
     }
 }
+trait Serialize {
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()>;
+}
+impl<T> Serialize for T
+where
+    T: ToLeBytesVec,
+{
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(&self.to_le_bytes_vec())?;
+        Ok(())
+    }
+}
+impl Serialize for String {
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(&self.as_bytes())?;
+        Ok(())
+    }
+}
+impl<T, E> Serialize for Result<T, E>
+where
+    T: quantities::Quantity,
+    E: IsFundamental + std::fmt::Debug + ToLeBytesVec,
+{
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        if self.is_ok() {
+            writer.write_all(&[1 as u8])?; // use 1 to indicate value being okay
+            writer.write_all(&self.as_ref().unwrap().amount().to_le_bytes())?;
+        } else {
+            writer.write_all(&[0 as u8])?; // use 1 to indicate value being okay
+            writer.write_all(&self.as_ref().err().unwrap().to_le_bytes_vec())?;
+        }
+        Ok(())
+    }
+}
+
+trait FromLeBytes: Sized {
+    fn from_le_bytes(bytes: &[u8]) -> Self;
+}
+macro_rules! impl_from_le_bytes_for_fundamental {
+    ($($t:ty),*) => {
+        $(
+            impl FromLeBytes for $t {
+                fn from_le_bytes(bytes: &[u8]) -> Self {
+                    assert!(bytes.len() == std::mem::size_of::<$t>(), "Invalid byte slice length for {}", stringify!($t));
+                    let mut arr = [0u8; std::mem::size_of::<$t>()];
+                    arr.copy_from_slice(bytes);
+                    <$t>::from_le_bytes(arr)
+                }
+            }
+        )*
+    };
+}
+impl_from_le_bytes_for_fundamental!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+
+// trait Deserialize: Sized {
+//     fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self>;
+// }
+
+// impl<T> Deserialize for T
+// where
+//     T: FromLeBytes + Default,
+// {
+//     fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+//         let mut buffer = [0u8; std::mem::size_of::<T>()];
+//         reader.read_exact(&mut buffer)?;
+//         Ok(T::from_le_bytes(&buffer))
+//     }
+// }
+
+// impl Deserialize for String {
+//     fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+//         let mut buffer = Vec::new();
+//         reader.read_to_end(&mut buffer)?;
+//         String::from_utf8(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+//     }
+// }
 
 #[derive(Debug, Clone)]
 struct Header<T> {
@@ -217,10 +306,20 @@ struct Packet<V> {
 
 impl<V> Packet<V>
 where
-    V: TypeIdentifier + Copy + Clone,
+    V: TypeIdentifier + Copy + Clone + SerializeSize + Serialize,
 {
-    // fn new(value: V) -> Self {
-    //     // let header = Header::new()
-    //     Self{}
-    // }
+    fn new(value: V) -> Self {
+        Self {
+            header: Header::new(V::serialize_size(&value)),
+            value,
+        }
+    }
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        self.header.serialize(writer)?;
+        self.value.serialize(writer)?;
+        Ok(())
+    }
+    fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        let header = Header::deserialize(reader);
+    }
 }
