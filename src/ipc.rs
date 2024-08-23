@@ -1,17 +1,22 @@
+use futures::stream::StreamExt;
+use futures_channel::mpsc;
 use quantities::mass::Mass;
-use std::io;
 use std::marker::PhantomData;
-use zeromq::{PubSocket, SocketOptions, SubSocket};
+use std::{error::Error, io};
+use zeromq::{PubSocket, Socket, SocketEvent, SocketOptions, SocketSend, SubSocket, ZmqMessage};
 
 use crate::progbase;
 
 const FILE_PREFIX: &'static str = "ipc://";
 const FILE_PATH: &'static str = "/var/run/tfc/";
+fn endpoint(file_name: &str) -> String {
+    format!("{}{}{}", FILE_PREFIX, FILE_PATH, file_name)
+}
 
-struct Base<T> {
-    name: String,
-    description: String,
-    value: T,
+pub struct Base<T> {
+    pub name: String,
+    pub description: Option<String>,
+    pub value: Option<T>,
 }
 
 impl<T: TypeName> Base<T> {
@@ -25,7 +30,7 @@ impl<T: TypeName> Base<T> {
         )
     }
     fn endpoint(&self) -> String {
-        format!("{}{}{}", FILE_PREFIX, FILE_PATH, self.full_name())
+        endpoint(&self.full_name())
     }
 }
 
@@ -35,20 +40,74 @@ pub struct Slot<T> {
     sock: SubSocket,
 }
 
-impl<T> Slot<T> {
-    pub fn new() {
+impl<T> Slot<T>
+where
+    T: TypeName,
+{
+    pub fn new(base: Base<T>, callback: Box<dyn Fn(T)>) -> Self {
         // todo: https://github.com/zeromq/zmq.rs/issues/196
         // let mut options = SocketOptions::default();
         // options.ZMQ_RECONNECT_IVL
-
-        //
+        Self {
+            base,
+            callback,
+            sock: SubSocket::new(),
+        }
+    }
+    pub async fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
+        let socket_path = endpoint(signal_name);
+        self.sock.connect(socket_path.as_str()).await?;
+        Ok(())
     }
 }
 
 pub struct Signal<T> {
     base: Base<T>,
-    value: T,
     sock: PubSocket,
+    monitor: Option<mpsc::Receiver<SocketEvent>>,
+}
+
+impl<T> Signal<T>
+where
+    T: TypeName + TypeIdentifier + SerializeSize + Serialize + Deserialize,
+{
+    pub fn new(base: Base<T>) -> Self {
+        Self {
+            base,
+            sock: PubSocket::new(),
+            monitor: None,
+        }
+    }
+    pub async fn init(&mut self) -> Result<(), Box<dyn Error>> {
+        self.sock.bind(self.base.endpoint().as_str()).await?;
+        self.monitor = Some(self.sock.monitor());
+        if let Some(mut receiver) = self.monitor.take() {
+            tokio::spawn(async move {
+                while let Some(event) = receiver.next().await {
+                    match event {
+                        SocketEvent::Connected { .. } => {
+                            println!("Connected");
+                        }
+                        other_event => {
+                            println!("Other event: {:?}", other_event);
+                        }
+                    }
+                }
+                println!("Receiver has been dropped. Task terminating.");
+            });
+        }
+        Ok(())
+    }
+    pub async fn send(&mut self, value: T) -> Result<(), Box<dyn Error>> {
+        let mut buffer = Vec::new();
+        {
+            let packet = SerializePacket::new(&value);
+            packet.serialize(&mut buffer).expect("Serialization failed");
+        }
+        self.base.value = Some(value);
+        self.sock.send(ZmqMessage::from(buffer)).await?;
+        Ok(())
+    }
 }
 
 // ------------------ trait TypeName ------------------
@@ -354,17 +413,17 @@ impl<T: TypeIdentifier> Header<T> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Packet<V> {
+#[derive(Debug)]
+struct SerializePacket<'a, V> {
     header: Header<V>,
-    value: V,
+    value: &'a V,
 }
 
-impl<V> Packet<V>
+impl<'a, V> SerializePacket<'a, V>
 where
-    V: TypeIdentifier + Clone + SerializeSize + Serialize + Deserialize,
+    V: TypeIdentifier + SerializeSize + Serialize + Deserialize,
 {
-    fn new(value: V) -> Self {
+    fn new(value: &'a V) -> Self {
         Self {
             header: Header::new(V::serialize_size(&value)),
             value,
@@ -375,6 +434,18 @@ where
         self.value.serialize(writer)?;
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct DeserializePacket<V> {
+    header: Header<V>,
+    value: V,
+}
+
+impl<V> DeserializePacket<V>
+where
+    V: TypeIdentifier + SerializeSize + Serialize + Deserialize,
+{
     fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self> {
         let header = Header::deserialize(reader)?;
         let value = V::deserialize(reader)?;
@@ -391,15 +462,9 @@ mod tests {
 
     fn packet_serialize_deserialize<T>(value: T)
     where
-        T: TypeIdentifier
-            + Clone
-            + SerializeSize
-            + Serialize
-            + Deserialize
-            + PartialEq
-            + std::fmt::Debug,
+        T: TypeIdentifier + SerializeSize + Serialize + Deserialize + PartialEq + std::fmt::Debug,
     {
-        let packet = Packet::new(value);
+        let packet = SerializePacket::new(&value);
 
         // Serialize the packet
         let mut buffer = Vec::new();
@@ -408,10 +473,10 @@ mod tests {
         // Deserialize the packet
         let mut cursor = Cursor::new(buffer);
         let deserialized_packet =
-            Packet::<T>::deserialize(&mut cursor).expect("Deserialization failed");
+            DeserializePacket::<T>::deserialize(&mut cursor).expect("Deserialization failed");
 
         // Check that the deserialized value matches the original
-        assert_eq!(packet.value, deserialized_packet.value);
+        assert_eq!(*packet.value, deserialized_packet.value);
         assert_eq!(
             packet.header.value_size,
             deserialized_packet.header.value_size
