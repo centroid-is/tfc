@@ -104,7 +104,8 @@ impl_type_identifier! {
     f64 => 4,
     String => 5,
     // todo json
-    Mass => 7
+    Result<Mass, i32> => 7, // TODO let's just make a ipc_mass.rs or something and impl this there with its enum
+    Mass => 7 // TODO can we deduce this somehow
 }
 
 // ------------------ enum Protocol Version ------------------
@@ -139,6 +140,11 @@ macro_rules! impl_to_le_bytes_vec_for_fundamental {
     };
 }
 impl_to_le_bytes_vec_for_fundamental!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+impl ToLeBytesVec for bool {
+    fn to_le_bytes_vec(&self) -> Vec<u8> {
+        vec![*self as u8]
+    }
+}
 
 trait SerializeSize {
     fn serialize_size(&self) -> usize;
@@ -216,29 +222,79 @@ macro_rules! impl_from_le_bytes_for_fundamental {
     };
 }
 impl_from_le_bytes_for_fundamental!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+impl FromLeBytes for bool {
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        assert!(bytes.len() == 1, "Invalid byte slice length for bool");
+        bytes[0] != 0
+    }
+}
 
-// trait Deserialize: Sized {
-//     fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self>;
-// }
+trait Deserialize: Sized {
+    fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self>;
+}
 
-// impl<T> Deserialize for T
-// where
-//     T: FromLeBytes + Default,
-// {
-//     fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self> {
-//         let mut buffer = [0u8; std::mem::size_of::<T>()];
-//         reader.read_exact(&mut buffer)?;
-//         Ok(T::from_le_bytes(&buffer))
-//     }
-// }
+impl<T> Deserialize for T
+where
+    T: FromLeBytes,
+{
+    fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        let mut buffer = vec![0u8; std::mem::size_of::<T>()];
+        reader.read_exact(&mut buffer)?;
+        Ok(T::from_le_bytes(&buffer))
+    }
+}
 
-// impl Deserialize for String {
-//     fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self> {
-//         let mut buffer = Vec::new();
-//         reader.read_to_end(&mut buffer)?;
-//         String::from_utf8(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-//     }
-// }
+impl Deserialize for String {
+    fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer)?;
+        String::from_utf8(buffer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+}
+
+impl<T, E> Deserialize for Result<T, E>
+where
+    T: quantities::Quantity<UnitType = quantities::mass::MassUnit>
+        // TODO this now only supports mass
+        + TypeIdentifier,
+    quantities::AmountT: FromLeBytes, // I would much rather like T::AmountT
+    E: IsFundamental + std::fmt::Debug + FromLeBytes,
+{
+    fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        let mut status_byte = [0u8; 1];
+        reader.read_exact(&mut status_byte)?;
+
+        if status_byte[0] == 1 {
+            // Deserialize as Ok(T)
+            let mut amount_buffer = [0u8; std::mem::size_of::<quantities::AmountT>()];
+            reader.read_exact(&mut amount_buffer)?;
+            let amount = quantities::AmountT::from_le_bytes(amount_buffer);
+            // So the unit type of Quantity is a member variable so we cannot determine the type
+            // at compile time, and this is god damn bloated
+            let unit;
+            if T::type_identifier() == Mass::type_identifier() {
+                unit = quantities::mass::MILLIGRAM;
+            } else {
+                panic!(
+                    "Unable to determine UnitType for type id: {}",
+                    T::type_identifier()
+                )
+            }
+            Ok(Ok(T::new(amount, unit)))
+        } else if status_byte[0] == 0 {
+            // Deserialize as Err(E)
+            let mut error_buffer = vec![0u8; std::mem::size_of::<E>()];
+            reader.read_exact(&mut error_buffer)?;
+            let error = E::from_le_bytes(&error_buffer);
+            Ok(Err(error))
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid status byte in serialized Result",
+            ))
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct Header<T> {
@@ -306,7 +362,7 @@ struct Packet<V> {
 
 impl<V> Packet<V>
 where
-    V: TypeIdentifier + Copy + Clone + SerializeSize + Serialize,
+    V: TypeIdentifier + Clone + SerializeSize + Serialize + Deserialize,
 {
     fn new(value: V) -> Self {
         Self {
@@ -320,6 +376,101 @@ where
         Ok(())
     }
     fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self> {
-        let header = Header::deserialize(reader);
+        let header = Header::deserialize(reader)?;
+        let value = V::deserialize(reader)?;
+        Ok(Self { header, value })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quantities::mass::Mass;
+    use rand::Rng;
+    use std::io::Cursor;
+
+    fn packet_serialize_deserialize<T>(value: T)
+    where
+        T: TypeIdentifier
+            + Clone
+            + SerializeSize
+            + Serialize
+            + Deserialize
+            + PartialEq
+            + std::fmt::Debug,
+    {
+        let packet = Packet::new(value);
+
+        // Serialize the packet
+        let mut buffer = Vec::new();
+        packet.serialize(&mut buffer).expect("Serialization failed");
+
+        // Deserialize the packet
+        let mut cursor = Cursor::new(buffer);
+        let deserialized_packet =
+            Packet::<T>::deserialize(&mut cursor).expect("Deserialization failed");
+
+        // Check that the deserialized value matches the original
+        assert_eq!(packet.value, deserialized_packet.value);
+        assert_eq!(
+            packet.header.value_size,
+            deserialized_packet.header.value_size
+        );
+        assert_eq!(packet.header.type_id, deserialized_packet.header.type_id);
+    }
+
+    #[test]
+    fn test_packet_serialize_deserialize_fundamentals() {
+        packet_serialize_deserialize(std::i64::MAX);
+        packet_serialize_deserialize(std::i64::MIN);
+        packet_serialize_deserialize(1337 as i64);
+
+        packet_serialize_deserialize(std::u64::MAX);
+        packet_serialize_deserialize(std::u64::MIN);
+        packet_serialize_deserialize(1337 as u64);
+
+        packet_serialize_deserialize(std::f64::MAX);
+        packet_serialize_deserialize(std::f64::MIN);
+        packet_serialize_deserialize(13.37 as f64);
+
+        packet_serialize_deserialize(true);
+        packet_serialize_deserialize(false);
+    }
+
+    #[test]
+    fn test_packet_serialize_deserialize_string() {
+        packet_serialize_deserialize("false".to_string());
+
+        let size = 1024 * 1024; // 1KB * 1KB
+        let mut rng = rand::thread_rng();
+        let mut random_string = String::with_capacity(size);
+
+        for _ in 0..size {
+            let random_char = rng.gen_range('a'..='z');
+            random_string.push(random_char);
+        }
+
+        packet_serialize_deserialize(random_string);
+    }
+
+    #[test]
+    fn test_packet_serialize_deserialize_mass() {
+        packet_serialize_deserialize(
+            Ok(quantities::Amnt!(10.0) * quantities::mass::MILLIGRAM) as Result<Mass, i32>
+        );
+        packet_serialize_deserialize(
+            Ok(quantities::Amnt!(1333333337) * quantities::mass::MILLIGRAM) as Result<Mass, i32>,
+        );
+        packet_serialize_deserialize(
+            Ok(quantities::Amnt!(-1333333337) * quantities::mass::MILLIGRAM) as Result<Mass, i32>,
+        );
+        packet_serialize_deserialize(
+            Ok(quantities::Amnt!(13333.33337) * quantities::mass::MILLIGRAM) as Result<Mass, i32>,
+        );
+        packet_serialize_deserialize(Ok(
+            quantities::Amnt!(-13333.33337) * quantities::mass::MILLIGRAM
+        ) as Result<Mass, i32>);
+
+        packet_serialize_deserialize(Err(-1) as Result<Mass, i32>); // todo make
     }
 }
