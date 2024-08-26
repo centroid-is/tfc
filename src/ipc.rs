@@ -1,5 +1,6 @@
 use futures::stream::StreamExt;
 use futures_channel::mpsc;
+use log::{log, Level};
 use quantities::mass::Mass;
 use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc, sync::RwLock};
@@ -116,12 +117,16 @@ where
 
         let shared_value = Arc::clone(&self.base.value);
         let shared_sock = Arc::clone(&self.sock);
+        let cp_name = self.base.full_name();
         if let Some(mut receiver) = self.monitor.take() {
             tokio::spawn(async move {
                 while let Some(event) = receiver.next().await {
                     match event {
                         SocketEvent::Accepted { .. } => {
-                            println!("Accepted, last value: {:?}", shared_value.read().unwrap());
+                            log!(target: &cp_name, Level::Trace,
+                                "Accepted event, last value: {:?}", shared_value.read().unwrap()
+                            );
+                            let locked_sock = shared_sock.lock();
                             let mut buffer = Vec::new();
                             {
                                 let value = shared_value.read().unwrap();
@@ -131,14 +136,12 @@ where
                                 let packet = SerializePacket::new(value.as_ref().unwrap());
                                 packet.serialize(&mut buffer).expect("Serialization failed");
                             }
-                            shared_sock
-                                .lock()
-                                .await
-                                .send(ZmqMessage::from(buffer))
-                                .await?;
+                            // TODO use ZMQ_EVENT_HANDSHAKE_SUCCEEDED and throw this sleep out
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                            locked_sock.await.send(ZmqMessage::from(buffer)).await?;
                         }
                         other_event => {
-                            println!(
+                            log!(target: &cp_name, Level::Info,
                                 "Other event: {:?}, last value: {:?}",
                                 other_event,
                                 shared_value.read().unwrap()
