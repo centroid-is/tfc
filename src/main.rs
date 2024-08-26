@@ -47,17 +47,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _config = ConfMan::<Greeter>::new(_conn.clone(), "greeterfu_uf0");
 
-    let mut i64_signal = Signal::<i64>::new(Base {
-        name: "foo".to_string(),
-        description: None,
-        value: None,
-    });
+    let mut i64_signal = Signal::<i64>::new(Base::new("foo", None));
     i64_signal.init().await?;
 
     for i in 1..1024 {
         i64_signal.send(i).await?;
         println!("The value of i is: {}", i);
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
 
     // Do other things or go to wait forever

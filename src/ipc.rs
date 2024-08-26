@@ -2,8 +2,11 @@ use futures::stream::StreamExt;
 use futures_channel::mpsc;
 use quantities::mass::Mass;
 use std::marker::PhantomData;
-use std::{error::Error, io};
-use zeromq::{PubSocket, Socket, SocketEvent, SocketOptions, SocketSend, SubSocket, ZmqMessage};
+use std::{error::Error, io, path::PathBuf, sync::Arc, sync::RwLock};
+use tokio::sync::Mutex;
+use zeromq::{
+    PubSocket, Socket, SocketEvent, SocketOptions, SocketSend, SubSocket, ZmqError, ZmqMessage,
+};
 
 use crate::progbase;
 
@@ -16,10 +19,17 @@ fn endpoint(file_name: &str) -> String {
 pub struct Base<T> {
     pub name: String,
     pub description: Option<String>,
-    pub value: Option<T>,
+    pub value: Arc<RwLock<Option<T>>>,
 }
 
 impl<T: TypeName> Base<T> {
+    pub fn new(name: &str, description: Option<String>) -> Self {
+        Self {
+            name: String::from(name),
+            description,
+            value: Arc::new(RwLock::new(None)),
+        }
+    }
     fn full_name(&self) -> String {
         format!(
             "{}.{}.{}.{}",
@@ -31,6 +41,9 @@ impl<T: TypeName> Base<T> {
     }
     fn endpoint(&self) -> String {
         endpoint(&self.full_name())
+    }
+    fn path(&self) -> PathBuf {
+        PathBuf::from(format!("{}{}", FILE_PATH, self.full_name()))
     }
 }
 
@@ -63,37 +76,78 @@ where
 
 pub struct Signal<T> {
     base: Base<T>,
-    sock: PubSocket,
+    sock: Arc<Mutex<PubSocket>>,
     monitor: Option<mpsc::Receiver<SocketEvent>>,
 }
 
 impl<T> Signal<T>
 where
-    T: TypeName + TypeIdentifier + SerializeSize + Serialize + Deserialize,
+    T: TypeName
+        + TypeIdentifier
+        + SerializeSize
+        + Serialize
+        + Deserialize
+        + std::fmt::Debug
+        + std::marker::Sync
+        + std::marker::Send
+        + 'static,
 {
     pub fn new(base: Base<T>) -> Self {
         Self {
             base,
-            sock: PubSocket::new(),
+            sock: Arc::new(Mutex::new(PubSocket::new())),
             monitor: None,
         }
     }
     pub async fn init(&mut self) -> Result<(), Box<dyn Error>> {
-        self.sock.bind(self.base.endpoint().as_str()).await?;
-        self.monitor = Some(self.sock.monitor());
+        // Todo cpp azmq does this by itself
+        // We should check whether any PID is binded to the file before removing it
+        // But the bind below fails if the file exists, even though no one is binded to it
+        let path = self.base.path();
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        self.sock
+            .lock()
+            .await
+            .bind(self.base.endpoint().as_str())
+            .await?;
+        self.monitor = Some(self.sock.lock().await.monitor());
+
+        let shared_value = Arc::clone(&self.base.value);
+        let shared_sock = Arc::clone(&self.sock);
         if let Some(mut receiver) = self.monitor.take() {
             tokio::spawn(async move {
                 while let Some(event) = receiver.next().await {
                     match event {
-                        SocketEvent::Connected { .. } => {
-                            println!("Connected");
+                        SocketEvent::Accepted { .. } => {
+                            println!("Accepted, last value: {:?}", shared_value.read().unwrap());
+                            let mut buffer = Vec::new();
+                            {
+                                let value = shared_value.read().unwrap();
+                                if value.is_none() {
+                                    return Ok(()) as Result<(), ZmqError>;
+                                }
+                                let packet = SerializePacket::new(value.as_ref().unwrap());
+                                packet.serialize(&mut buffer).expect("Serialization failed");
+                            }
+                            shared_sock
+                                .lock()
+                                .await
+                                .send(ZmqMessage::from(buffer))
+                                .await?;
                         }
                         other_event => {
-                            println!("Other event: {:?}", other_event);
+                            println!(
+                                "Other event: {:?}, last value: {:?}",
+                                other_event,
+                                shared_value.read().unwrap()
+                            );
                         }
                     }
                 }
                 println!("Receiver has been dropped. Task terminating.");
+                Ok(())
             });
         }
         Ok(())
@@ -104,15 +158,19 @@ where
             let packet = SerializePacket::new(&value);
             packet.serialize(&mut buffer).expect("Serialization failed");
         }
-        self.base.value = Some(value);
-        self.sock.send(ZmqMessage::from(buffer)).await?;
+        *self.base.value.write().unwrap() = Some(value);
+        self.sock
+            .lock()
+            .await
+            .send(ZmqMessage::from(buffer))
+            .await?;
         Ok(())
     }
 }
 
 // ------------------ trait TypeName ------------------
 
-trait TypeName {
+pub trait TypeName {
     fn type_name() -> &'static str;
 }
 
