@@ -48,15 +48,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _config = ConfMan::<Greeter>::new(_conn.clone(), "greeterfu_uf0");
 
     let mut i64_signal = Signal::<i64>::new(Base::new("foo", None));
-    i64_signal.init().await?;
 
     let mut i64_slot = Slot::<i64>::new(Base::new("bar", None));
-    i64_slot.connect(i64_signal.full_name().as_str()).await?;
+    println!("Slot created");
+    i64_slot.connect(i64_signal.full_name().as_str());
+    println!("Slot connected");
     tokio::spawn(async move {
         println!("Wait for recv");
         let val = i64_slot.recv().await;
         println!("Received value: {:?}", val);
     });
+
+    i64_signal.init().await?;
 
     for i in 1..1024 {
         i64_signal.send(i).await?;

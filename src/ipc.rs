@@ -53,7 +53,7 @@ impl<T: TypeName> Base<T> {
 pub struct Slot<T> {
     base: Base<T>,
     // callback: Box<dyn Fn(T)>,
-    sock: SubSocket,
+    sock: Arc<Mutex<SubSocket>>,
 }
 
 impl<T> Slot<T>
@@ -67,18 +67,32 @@ where
         // options.ZMQ_RECONNECT_IVL
         Self {
             base,
-            sock: SubSocket::new(),
+            sock: Arc::new(Mutex::new(SubSocket::new())),
         }
     }
-    pub async fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
-        // todo reconnect
+    async fn async_connect_(
+        sock: Arc<Mutex<SubSocket>>,
+        signal_name: &str,
+    ) -> Result<(), Box<dyn Error>> {
         let socket_path = endpoint(signal_name);
-        self.sock.connect(socket_path.as_str()).await?;
-        self.sock.subscribe("").await?;
+        sock.lock().await.connect(socket_path.as_str()).await?;
+        sock.lock().await.subscribe("").await?;
+        Ok(())
+    }
+    pub async fn async_connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
+        // todo reconnect
+        Self::async_connect_(Arc::clone(&self.sock), signal_name).await
+    }
+    pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
+        let signal_name_str = signal_name.to_string();
+        let shared_sock = Arc::clone(&self.sock);
+        tokio::spawn(async move {
+            Self::async_connect_(shared_sock, signal_name_str.as_str()).await;
+        });
         Ok(())
     }
     pub async fn recv(&mut self) -> Result<T, Box<dyn Error>> {
-        let buffer: ZmqMessage = self.sock.recv().await?;
+        let buffer: ZmqMessage = self.sock.lock().await.recv().await?;
         // todo remove copying
         let flattened_buffer: Vec<u8> = buffer.iter().flat_map(|b| b.to_vec()).collect();
         let mut cursor = io::Cursor::new(flattened_buffer);
