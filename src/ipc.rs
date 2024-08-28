@@ -2,11 +2,13 @@ use futures::stream::StreamExt;
 use futures_channel::mpsc;
 use log::{log, Level};
 use quantities::mass::Mass;
+use std::io::Cursor;
 use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc, sync::RwLock};
 use tokio::sync::Mutex;
 use zeromq::{
-    PubSocket, Socket, SocketEvent, SocketOptions, SocketSend, SubSocket, ZmqError, ZmqMessage,
+    PubSocket, Socket, SocketEvent, SocketOptions, SocketRecv, SocketSend, SubSocket, ZmqError,
+    ZmqMessage,
 };
 
 use crate::progbase;
@@ -50,28 +52,39 @@ impl<T: TypeName> Base<T> {
 
 pub struct Slot<T> {
     base: Base<T>,
-    callback: Box<dyn Fn(T)>,
+    // callback: Box<dyn Fn(T)>,
     sock: SubSocket,
 }
 
 impl<T> Slot<T>
 where
-    T: TypeName,
+    T: TypeName + TypeIdentifier + Deserialize,
 {
-    pub fn new(base: Base<T>, callback: Box<dyn Fn(T)>) -> Self {
+    pub fn new(base: Base<T>, // , callback: Box<dyn Fn(T)>
+    ) -> Self {
         // todo: https://github.com/zeromq/zmq.rs/issues/196
         // let mut options = SocketOptions::default();
         // options.ZMQ_RECONNECT_IVL
         Self {
             base,
-            callback,
             sock: SubSocket::new(),
         }
     }
     pub async fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
+        // todo reconnect
         let socket_path = endpoint(signal_name);
         self.sock.connect(socket_path.as_str()).await?;
+        self.sock.subscribe("").await?;
         Ok(())
+    }
+    pub async fn recv(&mut self) -> Result<T, Box<dyn Error>> {
+        let buffer: ZmqMessage = self.sock.recv().await?;
+        // todo remove copying
+        let flattened_buffer: Vec<u8> = buffer.iter().flat_map(|b| b.to_vec()).collect();
+        let mut cursor = io::Cursor::new(flattened_buffer);
+        let deserialized_packet =
+            DeserializePacket::<T>::deserialize(&mut cursor).expect("Deserialization failed");
+        Ok(deserialized_packet.value)
     }
 }
 
@@ -169,6 +182,10 @@ where
             .await?;
         Ok(())
     }
+
+    pub fn full_name(&self) -> String {
+        self.base.full_name()
+    }
 }
 
 // ------------------ trait TypeName ------------------
@@ -201,7 +218,7 @@ impl_type_name! {
 
 // ------------------ trait TypeIdentifier ------------------
 
-trait TypeIdentifier {
+pub trait TypeIdentifier {
     fn type_identifier() -> u8;
 }
 
@@ -349,7 +366,7 @@ impl FromLeBytes for bool {
     }
 }
 
-trait Deserialize: Sized {
+pub trait Deserialize: Sized {
     fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self>;
 }
 
@@ -505,7 +522,7 @@ struct DeserializePacket<V> {
 
 impl<V> DeserializePacket<V>
 where
-    V: TypeIdentifier + SerializeSize + Serialize + Deserialize,
+    V: TypeIdentifier + Deserialize,
 {
     fn deserialize<R: io::Read>(reader: &mut R) -> io::Result<Self> {
         let header = Header::deserialize(reader)?;

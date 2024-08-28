@@ -6,7 +6,7 @@ mod progbase;
 use std::future::pending;
 
 use confman::ConfMan;
-use ipc::{Base, Signal};
+use ipc::{Base, Signal, Slot};
 use log::{log, Level};
 
 use schemars::JsonSchema;
@@ -49,6 +49,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut i64_signal = Signal::<i64>::new(Base::new("foo", None));
     i64_signal.init().await?;
+
+    let mut i64_slot = Slot::<i64>::new(Base::new("bar", None));
+    i64_slot.connect(i64_signal.full_name().as_str()).await?;
+    tokio::spawn(async move {
+        println!("Wait for recv");
+        let val = i64_slot.recv().await;
+        println!("Received value: {:?}", val);
+    });
 
     for i in 1..1024 {
         i64_signal.send(i).await?;
