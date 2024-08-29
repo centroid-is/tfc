@@ -1,3 +1,4 @@
+use futures::future::Either;
 use futures::stream::StreamExt;
 use futures_channel::mpsc;
 use log::{log, Level};
@@ -5,7 +6,8 @@ use quantities::mass::Mass;
 use std::io::Cursor;
 use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc, sync::RwLock};
-use tokio::sync::Mutex;
+use tokio::select;
+use tokio::sync::{Mutex, Notify};
 use zeromq::{
     PubSocket, Socket, SocketEvent, SocketOptions, SocketRecv, SocketSend, SubSocket, ZmqError,
     ZmqMessage,
@@ -54,6 +56,8 @@ pub struct Slot<T> {
     base: Base<T>,
     // callback: Box<dyn Fn(T)>,
     sock: Arc<Mutex<SubSocket>>,
+    is_connected: bool,
+    connect_notify: Arc<Notify>,
 }
 
 impl<T> Slot<T>
@@ -68,6 +72,8 @@ where
         Self {
             base,
             sock: Arc::new(Mutex::new(SubSocket::new())),
+            is_connected: false,
+            connect_notify: Arc::new(Notify::new()),
         }
     }
     async fn async_connect_(
@@ -75,6 +81,7 @@ where
         signal_name: &str,
     ) -> Result<(), Box<dyn Error>> {
         let socket_path = endpoint(signal_name);
+        println!("Trying to connect to: {}", socket_path);
         sock.lock().await.connect(socket_path.as_str()).await?;
         sock.lock().await.subscribe("").await?;
         Ok(())
@@ -84,14 +91,40 @@ where
         Self::async_connect_(Arc::clone(&self.sock), signal_name).await
     }
     pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
-        let signal_name_str = signal_name.to_string();
         let shared_sock = Arc::clone(&self.sock);
+        let shared_connect_notify = Arc::clone(&self.connect_notify);
+        let signal_name_str = signal_name.to_string();
         tokio::spawn(async move {
-            Self::async_connect_(shared_sock, signal_name_str.as_str()).await;
+            loop {
+                let connect_task = async {
+                    Self::async_connect_(Arc::clone(&shared_sock), signal_name_str.as_str()).await
+                };
+                let timeout_task =
+                    async { tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await };
+                match select! {
+                    result = connect_task => Either::Left(result),
+                    _ = timeout_task => Either::Right(()),
+                } {
+                    Either::Left(Ok(_)) => {
+                        println!("Connection successful");
+                        shared_connect_notify.notify_waiters();
+                        break;
+                    }
+                    Either::Left(Err(e)) => {
+                        eprintln!("Connection failed: {}", e);
+                    }
+                    Either::Right(_) => {
+                        eprintln!("Connection timed out: {}", signal_name_str);
+                    }
+                }
+            }
         });
         Ok(())
     }
     pub async fn recv(&mut self) -> Result<T, Box<dyn Error>> {
+        if !self.is_connected {
+            self.connect_notify.notified().await;
+        }
         let buffer: ZmqMessage = self.sock.lock().await.recv().await?;
         // todo remove copying
         let flattened_buffer: Vec<u8> = buffer.iter().flat_map(|b| b.to_vec()).collect();

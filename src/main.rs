@@ -51,6 +51,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut i64_slot = Slot::<i64>::new(Base::new("bar", None));
     println!("Slot created");
+    // i64_slot
+    //     .async_connect(i64_signal.full_name().as_str())
+    //     .await?;
     i64_slot.connect(i64_signal.full_name().as_str());
     println!("Slot connected");
     tokio::spawn(async move {
