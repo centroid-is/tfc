@@ -25,6 +25,7 @@ pub struct Base<T> {
     pub name: String,
     pub description: Option<String>,
     pub value: Arc<RwLock<Option<T>>>,
+    pub log_key: String,
 }
 
 impl<T: TypeName> Base<T> {
@@ -33,6 +34,7 @@ impl<T: TypeName> Base<T> {
             name: String::from(name),
             description,
             value: Arc::new(RwLock::new(None)),
+            log_key: String::from(name),
         }
     }
     fn full_name(&self) -> String {
@@ -94,6 +96,7 @@ where
         let shared_sock = Arc::clone(&self.sock);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
         let signal_name_str = signal_name.to_string();
+        let log_key_cp = self.base.log_key.clone();
         tokio::spawn(async move {
             loop {
                 let connect_task = async {
@@ -106,15 +109,16 @@ where
                     _ = timeout_task => Either::Right(()),
                 } {
                     Either::Left(Ok(_)) => {
-                        println!("Connection successful");
+                        log!(target: &log_key_cp, Level::Trace,
+                            "Connect to: {:?} succesful", signal_name_str);
                         shared_connect_notify.notify_waiters();
                         break;
                     }
                     Either::Left(Err(e)) => {
-                        eprintln!("Connection failed: {}", e);
+                        log!(target: &log_key_cp, Level::Trace, "Connect failed: {:?} will try again", e);
                     }
                     Either::Right(_) => {
-                        eprintln!("Connection timed out: {}", signal_name_str);
+                        log!(target: &log_key_cp, Level::Trace, "Connect timed out");
                     }
                 }
             }

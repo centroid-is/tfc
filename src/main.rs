@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // i64_slot
     //     .async_connect(i64_signal.full_name().as_str())
     //     .await?;
-    i64_slot.connect(i64_signal.full_name().as_str());
+    let _ = i64_slot.connect(i64_signal.full_name().as_str());
     println!("Slot connected");
     tokio::spawn(async move {
         println!("Wait for recv");
