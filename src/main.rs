@@ -49,18 +49,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut i64_signal = Signal::<i64>::new(Base::new("foo", None));
 
-    let mut i64_slot = Slot::<i64>::new(Base::new("bar", None));
+    let mut i64_slot = Slot::<i64>::new(
+        Base::new("bar", None),
+        Box::new(|&val| {
+            println!("Received value: {:?}", val);
+        }),
+    );
     println!("Slot created");
     // i64_slot
     //     .async_connect(i64_signal.full_name().as_str())
     //     .await?;
     let _ = i64_slot.connect(i64_signal.full_name().as_str());
     println!("Slot connected");
-    tokio::spawn(async move {
-        println!("Wait for recv");
-        let val = i64_slot.recv().await;
-        println!("Received value: {:?}", val);
-    });
 
     i64_signal.init().await?;
 

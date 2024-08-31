@@ -5,9 +5,9 @@ use log::{log, Level};
 use quantities::mass::Mass;
 use std::io::Cursor;
 use std::marker::PhantomData;
-use std::{error::Error, io, path::PathBuf, sync::Arc, sync::RwLock};
+use std::{error::Error, io, path::PathBuf, sync::Arc};
 use tokio::select;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, RwLock};
 use zeromq::{
     PubSocket, Socket, SocketEvent, SocketOptions, SocketRecv, SocketSend, SubSocket, ZmqError,
     ZmqMessage,
@@ -55,6 +55,53 @@ impl<T: TypeName> Base<T> {
 }
 
 pub struct Slot<T> {
+    slot: Arc<RwLock<SlotImpl<T>>>,
+    last_value: Arc<Mutex<Option<T>>>,
+    cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>,
+}
+
+impl<T> Slot<T>
+where
+    T: TypeName + TypeIdentifier + Deserialize + Send + Sync + 'static,
+{
+    pub fn new(base: Base<T>, callback: Box<dyn Fn(&T) + Send + Sync>) -> Self {
+        let log_key = base.log_key.clone();
+        let name = base.name.clone();
+        let slot = Arc::new(RwLock::new(SlotImpl::new(base)));
+        let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
+        let wrapped_cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>> = Arc::new(Mutex::new(callback));
+        let shared_slot = Arc::clone(&slot);
+        let shared_last_value = Arc::clone(&last_value);
+        let shared_cb = Arc::clone(&wrapped_cb);
+        tokio::spawn(async move {
+            loop {
+                match shared_slot.read().await.recv().await {
+                    Ok(value) => {
+                        println!("hello world");
+                        *shared_last_value.lock().await = Some(value);
+                        if let Some(ref value) = *shared_last_value.lock().await {
+                            shared_cb.lock().await(value);
+                        }
+                    }
+                    Err(e) => {
+                        log!(target: &log_key, Level::Info,
+                                "Unsuccessful receive on slot: {:?}, error: {}", name, e);
+                    }
+                }
+            }
+        });
+        Self {
+            slot,
+            last_value,
+            cb: wrapped_cb,
+        }
+    }
+    pub async fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
+        self.slot.write().await.connect(signal_name)
+    }
+}
+
+pub struct SlotImpl<T> {
     base: Base<T>,
     // callback: Box<dyn Fn(T)>,
     sock: Arc<Mutex<SubSocket>>,
@@ -62,7 +109,7 @@ pub struct Slot<T> {
     connect_notify: Arc<Notify>,
 }
 
-impl<T> Slot<T>
+impl<T> SlotImpl<T>
 where
     T: TypeName + TypeIdentifier + Deserialize,
 {
@@ -79,18 +126,24 @@ where
         }
     }
     async fn async_connect_(
+        log_key: &str,
         sock: Arc<Mutex<SubSocket>>,
         signal_name: &str,
     ) -> Result<(), Box<dyn Error>> {
         let socket_path = endpoint(signal_name);
-        println!("Trying to connect to: {}", socket_path);
+        log!(target: &log_key, Level::Trace, "Trying to connect to: {}", socket_path);
         sock.lock().await.connect(socket_path.as_str()).await?;
         sock.lock().await.subscribe("").await?;
         Ok(())
     }
     pub async fn async_connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
         // todo reconnect
-        Self::async_connect_(Arc::clone(&self.sock), signal_name).await
+        Self::async_connect_(
+            self.base.log_key.as_str(),
+            Arc::clone(&self.sock),
+            signal_name,
+        )
+        .await
     }
     pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
         let shared_sock = Arc::clone(&self.sock);
@@ -100,7 +153,12 @@ where
         tokio::spawn(async move {
             loop {
                 let connect_task = async {
-                    Self::async_connect_(Arc::clone(&shared_sock), signal_name_str.as_str()).await
+                    Self::async_connect_(
+                        log_key_cp.as_str(),
+                        Arc::clone(&shared_sock),
+                        signal_name_str.as_str(),
+                    )
+                    .await
                 };
                 let timeout_task =
                     async { tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await };
@@ -125,7 +183,7 @@ where
         });
         Ok(())
     }
-    pub async fn recv(&mut self) -> Result<T, Box<dyn Error>> {
+    pub async fn recv(&self) -> Result<T, Box<dyn Error + Send + Sync>> {
         if !self.is_connected {
             self.connect_notify.notified().await;
         }
@@ -188,12 +246,12 @@ where
                     match event {
                         SocketEvent::Accepted { .. } => {
                             log!(target: &cp_name, Level::Trace,
-                                "Accepted event, last value: {:?}", shared_value.read().unwrap()
+                                "Accepted event, last value: {:?}", shared_value.read().await
                             );
                             let locked_sock = shared_sock.lock();
                             let mut buffer = Vec::new();
                             {
-                                let value = shared_value.read().unwrap();
+                                let value = shared_value.read().await;
                                 if value.is_none() {
                                     return Ok(()) as Result<(), ZmqError>;
                                 }
@@ -208,7 +266,7 @@ where
                             log!(target: &cp_name, Level::Info,
                                 "Other event: {:?}, last value: {:?}",
                                 other_event,
-                                shared_value.read().unwrap()
+                                shared_value.read().await
                             );
                         }
                     }
@@ -225,7 +283,7 @@ where
             let packet = SerializePacket::new(&value);
             packet.serialize(&mut buffer).expect("Serialization failed");
         }
-        *self.base.value.write().unwrap() = Some(value);
+        *self.base.value.write().await = Some(value);
         self.sock
             .lock()
             .await
