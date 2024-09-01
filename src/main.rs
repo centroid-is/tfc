@@ -6,7 +6,7 @@ mod progbase;
 use std::future::pending;
 
 use confman::ConfMan;
-use ipc::{Base, Signal, Slot};
+use ipc::{Base, Signal, Slot, SlotImpl};
 use log::{log, Level};
 
 use schemars::JsonSchema;
@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut i64_signal = Signal::<i64>::new(Base::new("foo", None));
 
+    let mut i64_raw_slot = SlotImpl::<i64>::new(Base::new("hello", None));
     let mut i64_slot = Slot::<i64>::new(
         Base::new("bar", None),
         Box::new(|&val| {
@@ -56,13 +57,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
     println!("Slot created");
-    // i64_slot
-    //     .async_connect(i64_signal.full_name().as_str())
-    //     .await?;
+    let _ = i64_raw_slot.connect(i64_signal.full_name().as_str());
     let _ = i64_slot.connect(i64_signal.full_name().as_str());
     println!("Slot connected");
 
     i64_signal.init().await?;
+
+    tokio::spawn(async move {
+        loop {
+            println!("awaiting new val");
+            let val = i64_raw_slot.recv().await;
+            println!("Raw slot val: {:?}", val);
+        }
+    });
 
     for i in 1..1024 {
         i64_signal.send(i).await?;

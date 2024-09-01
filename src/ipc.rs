@@ -3,6 +3,7 @@ use futures::stream::StreamExt;
 use futures_channel::mpsc;
 use log::{log, Level};
 use quantities::mass::Mass;
+use std::fmt::format;
 use std::io::Cursor;
 use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc};
@@ -34,8 +35,11 @@ impl<T: TypeName> Base<T> {
             name: String::from(name),
             description,
             value: Arc::new(RwLock::new(None)),
-            log_key: String::from(name),
+            log_key: Self::type_and_name(name),
         }
+    }
+    fn type_and_name(name: &str) -> String {
+        format!("{}.{}", T::type_name(), name)
     }
     fn full_name(&self) -> String {
         format!(
@@ -96,7 +100,7 @@ where
             cb: wrapped_cb,
         }
     }
-    pub async fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.slot.write().await.connect(signal_name)
     }
 }
@@ -105,7 +109,7 @@ pub struct SlotImpl<T> {
     base: Base<T>,
     // callback: Box<dyn Fn(T)>,
     sock: Arc<Mutex<SubSocket>>,
-    is_connected: bool,
+    is_connected: Arc<Mutex<bool>>,
     connect_notify: Arc<Notify>,
 }
 
@@ -121,7 +125,7 @@ where
         Self {
             base,
             sock: Arc::new(Mutex::new(SubSocket::new())),
-            is_connected: false,
+            is_connected: Arc::new(Mutex::new(false)),
             connect_notify: Arc::new(Notify::new()),
         }
     }
@@ -129,14 +133,17 @@ where
         log_key: &str,
         sock: Arc<Mutex<SubSocket>>,
         signal_name: &str,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let socket_path = endpoint(signal_name);
         log!(target: &log_key, Level::Trace, "Trying to connect to: {}", socket_path);
         sock.lock().await.connect(socket_path.as_str()).await?;
         sock.lock().await.subscribe("").await?;
         Ok(())
     }
-    pub async fn async_connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn async_connect(
+        &mut self,
+        signal_name: &str,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // todo reconnect
         Self::async_connect_(
             self.base.log_key.as_str(),
@@ -145,9 +152,10 @@ where
         )
         .await
     }
-    pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error>> {
+    pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         let shared_sock = Arc::clone(&self.sock);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
+        let shared_is_connected = Arc::clone(&self.is_connected);
         let signal_name_str = signal_name.to_string();
         let log_key_cp = self.base.log_key.clone();
         tokio::spawn(async move {
@@ -162,6 +170,7 @@ where
                 };
                 let timeout_task =
                     async { tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await };
+
                 match select! {
                     result = connect_task => Either::Left(result),
                     _ = timeout_task => Either::Right(()),
@@ -169,6 +178,7 @@ where
                     Either::Left(Ok(_)) => {
                         log!(target: &log_key_cp, Level::Trace,
                             "Connect to: {:?} succesful", signal_name_str);
+                        *shared_is_connected.lock().await = true;
                         shared_connect_notify.notify_waiters();
                         break;
                     }
@@ -184,7 +194,8 @@ where
         Ok(())
     }
     pub async fn recv(&self) -> Result<T, Box<dyn Error + Send + Sync>> {
-        if !self.is_connected {
+        if !*self.is_connected.lock().await {
+            log!(target: self.base.log_key.as_str(), Level::Trace, "Still not connected will wait until then");
             self.connect_notify.notified().await;
         }
         let buffer: ZmqMessage = self.sock.lock().await.recv().await?;
@@ -239,13 +250,13 @@ where
 
         let shared_value = Arc::clone(&self.base.value);
         let shared_sock = Arc::clone(&self.sock);
-        let cp_name = self.base.full_name();
+        let log_key = self.base.log_key.clone();
         if let Some(mut receiver) = self.monitor.take() {
             tokio::spawn(async move {
                 while let Some(event) = receiver.next().await {
                     match event {
                         SocketEvent::Accepted { .. } => {
-                            log!(target: &cp_name, Level::Trace,
+                            log!(target: &log_key, Level::Trace,
                                 "Accepted event, last value: {:?}", shared_value.read().await
                             );
                             let locked_sock = shared_sock.lock();
@@ -263,7 +274,7 @@ where
                             locked_sock.await.send(ZmqMessage::from(buffer)).await?;
                         }
                         other_event => {
-                            log!(target: &cp_name, Level::Info,
+                            log!(target: &log_key, Level::Info,
                                 "Other event: {:?}, last value: {:?}",
                                 other_event,
                                 shared_value.read().await
