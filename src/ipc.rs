@@ -61,30 +61,36 @@ impl<T: TypeName> Base<T> {
 pub struct Slot<T> {
     slot: Arc<RwLock<SlotImpl<T>>>,
     last_value: Arc<Mutex<Option<T>>>,
-    cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>,
+    cb: Option<Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>>,
     connect_notify: Arc<Notify>,
+    log_key: String,
 }
 
 impl<T> Slot<T>
 where
     T: TypeName + TypeIdentifier + Deserialize + Send + Sync + 'static,
 {
-    pub fn new(base: Base<T>, callback: Box<dyn Fn(&T) + Send + Sync>) -> Self {
+    pub fn new(base: Base<T>) -> Self {
         let log_key = base.log_key.clone();
-        let name = base.name.clone();
-        let slot = Arc::new(RwLock::new(SlotImpl::new(base)));
-        let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
-        let connect_notify = Arc::new(Notify::new());
+        Self {
+            slot: Arc::new(RwLock::new(SlotImpl::new(base))),
+            last_value: Arc::new(Mutex::new(None)),
+            cb: None,
+            connect_notify: Arc::new(Notify::new()),
+            log_key,
+        }
+    }
+    pub fn recv(&mut self, callback: Box<dyn Fn(&T) + Send + Sync>) {
         let wrapped_cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>> = Arc::new(Mutex::new(callback));
-        let shared_slot = Arc::clone(&slot);
-        let shared_last_value = Arc::clone(&last_value);
+        self.cb = Some(Arc::clone(&wrapped_cb));
+        let log_key = self.log_key.clone();
+        let shared_slot = Arc::clone(&self.slot);
+        let shared_last_value = Arc::clone(&self.last_value);
         let shared_cb = Arc::clone(&wrapped_cb);
-        let shared_connect_notify = Arc::clone(&connect_notify);
+        let shared_connect_notify = Arc::clone(&self.connect_notify);
         tokio::spawn(async move {
             loop {
                 let slot_guard = shared_slot.read().await; // Create a binding for the read guard
-                println!("hello world");
-
                 tokio::select! {
                     result = slot_guard.recv() => {
                         match result {
@@ -96,7 +102,7 @@ where
                             }
                             Err(e) => {
                                 log!(target: &log_key, Level::Info,
-                                        "Unsuccessful receive on slot: {:?}, error: {}", name, e);
+                                        "Unsuccessful receive on slot, error: {}", e);
                             }
                         }
                     },
@@ -107,12 +113,6 @@ where
                 }
             }
         });
-        Self {
-            slot,
-            last_value,
-            cb: wrapped_cb,
-            connect_notify,
-        }
     }
     pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         let shared_slot = Arc::clone(&self.slot);
