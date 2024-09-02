@@ -62,6 +62,7 @@ pub struct Slot<T> {
     slot: Arc<RwLock<SlotImpl<T>>>,
     last_value: Arc<Mutex<Option<T>>>,
     cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>,
+    connect_notify: Arc<Notify>,
 }
 
 impl<T> Slot<T>
@@ -73,24 +74,36 @@ where
         let name = base.name.clone();
         let slot = Arc::new(RwLock::new(SlotImpl::new(base)));
         let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
+        let connect_notify = Arc::new(Notify::new());
         let wrapped_cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>> = Arc::new(Mutex::new(callback));
         let shared_slot = Arc::clone(&slot);
         let shared_last_value = Arc::clone(&last_value);
         let shared_cb = Arc::clone(&wrapped_cb);
+        let shared_connect_notify = Arc::clone(&connect_notify);
         tokio::spawn(async move {
             loop {
-                match shared_slot.read().await.recv().await {
-                    Ok(value) => {
-                        println!("hello world");
-                        *shared_last_value.lock().await = Some(value);
-                        if let Some(ref value) = *shared_last_value.lock().await {
-                            shared_cb.lock().await(value);
+                let slot_guard = shared_slot.read().await; // Create a binding for the read guard
+                println!("hello world");
+
+                tokio::select! {
+                    result = slot_guard.recv() => {
+                        match result {
+                            Ok(value) => {
+                                *shared_last_value.lock().await = Some(value);
+                                if let Some(ref value) = *shared_last_value.lock().await {
+                                    shared_cb.lock().await(value);
+                                }
+                            }
+                            Err(e) => {
+                                log!(target: &log_key, Level::Info,
+                                        "Unsuccessful receive on slot: {:?}, error: {}", name, e);
+                            }
                         }
-                    }
-                    Err(e) => {
+                    },
+                    _ = shared_connect_notify.notified() => {
                         log!(target: &log_key, Level::Info,
-                                "Unsuccessful receive on slot: {:?}, error: {}", name, e);
-                    }
+                                "Connecting to other signal, let's try receiving from it");
+                    },
                 }
             }
         });
@@ -98,16 +111,23 @@ where
             slot,
             last_value,
             cb: wrapped_cb,
+            connect_notify,
         }
     }
-    pub async fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
-        self.slot.write().await.connect(signal_name)
+    pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let shared_slot = Arc::clone(&self.slot);
+        let shared_connect_notify = Arc::clone(&self.connect_notify);
+        let name = signal_name.to_string();
+        tokio::spawn(async move {
+            shared_connect_notify.notify_waiters();
+            shared_slot.write().await.connect(&name)
+        });
+        Ok(())
     }
 }
 
 pub struct SlotImpl<T> {
     base: Base<T>,
-    // callback: Box<dyn Fn(T)>,
     sock: Arc<Mutex<SubSocket>>,
     is_connected: Arc<Mutex<bool>>,
     connect_notify: Arc<Notify>,
