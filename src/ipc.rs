@@ -9,6 +9,7 @@ use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc};
 use tokio::select;
 use tokio::sync::{Mutex, Notify, RwLock};
+use zbus::interface;
 use zeromq::{
     PubSocket, Socket, SocketEvent, SocketOptions, SocketRecv, SocketSend, SubSocket, ZmqError,
     ZmqMessage,
@@ -60,6 +61,7 @@ impl<T: TypeName> Base<T> {
 
 pub struct Slot<T> {
     slot: Arc<RwLock<SlotImpl<T>>>,
+    dbus: SlotInterface<T>,
     last_value: Arc<Mutex<Option<T>>>,
     cb: Option<Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>>,
     connect_notify: Arc<Notify>,
@@ -72,9 +74,11 @@ where
 {
     pub fn new(base: Base<T>) -> Self {
         let log_key = base.log_key.clone();
+        let last_value = Arc::new(Mutex::new(None));
         Self {
             slot: Arc::new(RwLock::new(SlotImpl::new(base))),
-            last_value: Arc::new(Mutex::new(None)),
+            dbus: SlotInterface::new(Arc::clone(&last_value), &log_key),
+            last_value,
             cb: None,
             connect_notify: Arc::new(Notify::new()),
             log_key,
@@ -123,6 +127,37 @@ where
             shared_slot.write().await.connect(&name)
         });
         Ok(())
+    }
+}
+
+struct SlotInterface<T> {
+    last_value: Arc<Mutex<Option<T>>>,
+    log_key: String,
+}
+
+impl<T> SlotInterface<T> {
+    pub fn new(last_value: Arc<Mutex<Option<T>>>, key: &str) -> Self {
+        Self {
+            last_value,
+            log_key: key.to_string(),
+        }
+    }
+}
+#[interface(name = "is.centroid.Slot")]
+impl<'a, T: zbus::zvariant::Type + Into<zbus::zvariant::Value<'a>> + Clone + Send + 'static>
+    SlotInterface<T>
+where
+    zbus::zvariant::Structure<'a>: From<T>,
+{
+    #[zbus(property)]
+    async fn value(&self) -> Result<T, zbus::fdo::Error> {
+        let guard = self.last_value.lock().await;
+
+        if let Some(value) = guard.clone() {
+            Ok(value)
+        } else {
+            Err(zbus::fdo::Error::Failed("No value set".into()))
+        }
     }
 }
 
