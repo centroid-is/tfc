@@ -61,7 +61,6 @@ impl<T: TypeName> Base<T> {
 
 pub struct Slot<T> {
     slot: Arc<RwLock<SlotImpl<T>>>,
-    dbus: SlotInterface<T>,
     last_value: Arc<Mutex<Option<T>>>,
     cb: Option<Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>>,
     connect_notify: Arc<Notify>,
@@ -72,12 +71,26 @@ impl<T> Slot<T>
 where
     T: TypeName + TypeIdentifier + Deserialize + Send + Sync + 'static,
 {
-    pub fn new(base: Base<T>) -> Self {
+    pub fn new(bus: zbus::Connection, base: Base<T>) -> Self {
+        let log_key_cp = base.log_key.clone();
         let log_key = base.log_key.clone();
         let last_value = Arc::new(Mutex::new(None));
+        let client = SlotInterface::new(Arc::clone(&last_value), &log_key);
+        let path = format!(
+            "/is/centroid/Config/{}",
+            Base::<T>::type_and_name(&base.name)
+        );
+
+        tokio::spawn(async move {
+            // log if error
+            let _ = bus
+                .object_server()
+                .at(path, client)
+                .await
+                .expect(&format!("Error registering object: {}", log_key_cp));
+        });
         Self {
             slot: Arc::new(RwLock::new(SlotImpl::new(base))),
-            dbus: SlotInterface::new(Arc::clone(&last_value), &log_key),
             last_value,
             cb: None,
             connect_notify: Arc::new(Notify::new()),
@@ -131,33 +144,32 @@ where
 }
 
 struct SlotInterface<T> {
-    last_value: Arc<Mutex<Option<T>>>,
+    // last_value: Arc<Mutex<Option<T>>>,
     log_key: String,
+    _marker: PhantomData<T>,
 }
 
 impl<T> SlotInterface<T> {
     pub fn new(last_value: Arc<Mutex<Option<T>>>, key: &str) -> Self {
         Self {
-            last_value,
+            // last_value,
             log_key: key.to_string(),
+            _marker: PhantomData,
         }
     }
 }
 #[interface(name = "is.centroid.Slot")]
-impl<'a, T: zbus::zvariant::Type + Into<zbus::zvariant::Value<'a>> + Clone + Send + 'static>
-    SlotInterface<T>
-where
-    zbus::zvariant::Structure<'a>: From<T>,
-{
+impl<T: Send + Sync + 'static> SlotInterface<T> {
     #[zbus(property)]
-    async fn value(&self) -> Result<T, zbus::fdo::Error> {
-        let guard = self.last_value.lock().await;
-
-        if let Some(value) = guard.clone() {
-            Ok(value)
-        } else {
-            Err(zbus::fdo::Error::Failed("No value set".into()))
-        }
+    async fn value(&self) -> Result<String, zbus::fdo::Error> {
+        Ok("self.foo.clone()".to_string())
+        // let guard = self.last_value.lock().await;
+        //
+        // if let Some(value) = guard.clone() {
+        // Ok(value)
+        // } else {
+        // Err(zbus::fdo::Error::Failed("No value set".into()))
+        // }
     }
 }
 

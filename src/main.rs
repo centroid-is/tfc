@@ -29,32 +29,32 @@ struct Greeter {
 //     }
 // }
 //
-struct Application {
-    my_dream: i64,
-    slot: Slot<i64>,
-}
+// struct Application {
+//     my_dream: i64,
+//     slot: Slot<i64>,
+// }
 
-impl Application {
-    fn new(signal_name: &str) -> Arc<Mutex<Self>> {
-        let app = Arc::new(Mutex::new(Application {
-            my_dream: 0,
-            slot: Slot::new(Base::new("bark", None)),
-        }));
+// impl Application {
+//     fn new(signal_name: &str) -> Arc<Mutex<Self>> {
+//         let app = Arc::new(Mutex::new(Application {
+//             my_dream: 0,
+//             slot: Slot::new(Base::new("bark", None)),
+//         }));
 
-        let shared_app = Arc::clone(&app);
-        app.lock().unwrap().slot.recv(Box::new(move |val: &i64| {
-            shared_app.lock().unwrap().callback(val);
-        }));
+//         let shared_app = Arc::clone(&app);
+//         app.lock().unwrap().slot.recv(Box::new(move |val: &i64| {
+//             shared_app.lock().unwrap().callback(val);
+//         }));
 
-        let _ = app.lock().unwrap().slot.connect(signal_name);
+//         let _ = app.lock().unwrap().slot.connect(signal_name);
 
-        app
-    }
-    fn callback(&mut self, val: &i64) {
-        self.my_dream = *val;
-        println!("All my dreams come true: {}", val);
-    }
-}
+//         app
+//     }
+//     fn callback(&mut self, val: &i64) {
+//         self.my_dream = *val;
+//         println!("All my dreams come true: {}", val);
+//     }
+// }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -77,10 +77,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut i64_signal = Signal::<i64>::new(Base::new("foo", None));
 
-    let _ = Application::new(&i64_signal.full_name());
+    // let _ = Application::new(&i64_signal.full_name());
 
     let mut i64_raw_slot = SlotImpl::<i64>::new(Base::new("hello", None));
-    let mut i64_slot = Slot::<i64>::new(Base::new("bar", None));
+    let mut i64_slot = Slot::<i64>::new(_conn.clone(), Base::new("bar", None));
     i64_slot.recv(Box::new(|&val| {
         println!("Received value: {:?}", val);
     }));
