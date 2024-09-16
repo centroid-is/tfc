@@ -3,13 +3,14 @@ use futures::stream::StreamExt;
 use futures_channel::mpsc;
 use log::{log, Level};
 use quantities::mass::Mass;
+use schemars::JsonSchema;
 use std::fmt::format;
 use std::io::Cursor;
 use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc};
 use tokio::select;
 use tokio::sync::{Mutex, Notify, RwLock};
-use zbus::interface;
+use zbus::{interface, zvariant::Type};
 use zeromq::{
     PubSocket, Socket, SocketEvent, SocketOptions, SocketRecv, SocketSend, SubSocket, ZmqError,
     ZmqMessage,
@@ -40,7 +41,7 @@ impl<T: TypeName> Base<T> {
         }
     }
     fn type_and_name(name: &str) -> String {
-        format!("{}.{}", T::type_name(), name)
+        format!("{}/{}", T::type_name(), name)
     }
     fn full_name(&self) -> String {
         format!(
@@ -69,17 +70,24 @@ pub struct Slot<T> {
 
 impl<T> Slot<T>
 where
-    T: TypeName + TypeIdentifier + Deserialize + Send + Sync + 'static,
+    T: TypeName
+        + TypeIdentifier
+        + Deserialize
+        + Send
+        + Sync
+        + 'static //
+        // todo is this proper below
+        + Type
+        + Clone
+        + detail::SupportedTypes
+        + JsonSchema,
 {
     pub fn new(bus: zbus::Connection, base: Base<T>) -> Self {
         let log_key_cp = base.log_key.clone();
         let log_key = base.log_key.clone();
-        let last_value = Arc::new(Mutex::new(None));
+        let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
         let client = SlotInterface::new(Arc::clone(&last_value), &log_key);
-        let path = format!(
-            "/is/centroid/Config/{}",
-            Base::<T>::type_and_name(&base.name)
-        );
+        let path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
 
         tokio::spawn(async move {
             // log if error
@@ -91,7 +99,7 @@ where
         });
         Self {
             slot: Arc::new(RwLock::new(SlotImpl::new(base))),
-            last_value,
+            last_value: Arc::new(Mutex::new(None)),
             cb: None,
             connect_notify: Arc::new(Notify::new()),
             log_key,
@@ -143,33 +151,56 @@ where
     }
 }
 
-struct SlotInterface<T> {
-    // last_value: Arc<Mutex<Option<T>>>,
-    log_key: String,
-    _marker: PhantomData<T>,
-}
-
-impl<T> SlotInterface<T> {
-    pub fn new(last_value: Arc<Mutex<Option<T>>>, key: &str) -> Self {
-        Self {
-            // last_value,
-            log_key: key.to_string(),
-            _marker: PhantomData,
+mod detail {
+    pub trait SupportedTypes {
+        fn to_value(&self) -> zbus::zvariant::Value<'static>;
+    }
+    impl SupportedTypes for i64 {
+        fn to_value(&self) -> zbus::zvariant::Value<'static> {
+            zbus::zvariant::Value::from(*self)
         }
     }
 }
+
+struct SlotInterface<T> {
+    last_value: Arc<Mutex<Option<T>>>,
+    log_key: String,
+}
+
+impl<T: detail::SupportedTypes + zbus::zvariant::Type + Sync + Send + 'static> SlotInterface<T> {
+    pub fn new(last_value: Arc<Mutex<Option<T>>>, key: &str) -> Self {
+        Self {
+            last_value,
+            log_key: key.to_string(),
+        }
+    }
+}
+
 #[interface(name = "is.centroid.Slot")]
-impl<T: Send + Sync + 'static> SlotInterface<T> {
+impl<T> SlotInterface<T>
+where
+    T: Clone + detail::SupportedTypes + zbus::zvariant::Type + Sync + Send + 'static + JsonSchema,
+{
     #[zbus(property)]
-    async fn value(&self) -> Result<String, zbus::fdo::Error> {
-        Ok("self.foo.clone()".to_string())
-        // let guard = self.last_value.lock().await;
-        //
-        // if let Some(value) = guard.clone() {
-        // Ok(value)
-        // } else {
-        // Err(zbus::fdo::Error::Failed("No value set".into()))
-        // }
+    async fn value(&self) -> Result<zbus::zvariant::Value<'static>, zbus::fdo::Error> {
+        let guard = self.last_value.lock().await;
+
+        if let Some(value) = guard.clone() {
+            let value_as_value = <dyn detail::SupportedTypes>::to_value(&value);
+            Ok(value_as_value)
+        } else {
+            Err(zbus::fdo::Error::Failed("No value set".into()))
+        }
+    }
+    #[zbus(property)]
+    async fn schema(&self) -> Result<String, zbus::fdo::Error> {
+        serde_json::to_string_pretty(&schemars::schema_for!(T))
+            .map_err(|e| Box::new(e) as Box<dyn Error>)
+            .map_err(|e| {
+                let err_msg = format!("Error serializing to JSON schema: {}", e);
+                log!(target: &self.log_key, Level::Error, "{}", err_msg);
+                zbus::fdo::Error::Failed(err_msg)
+            })
     }
 }
 
