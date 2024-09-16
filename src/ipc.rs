@@ -99,7 +99,7 @@ where
         });
         Self {
             slot: Arc::new(RwLock::new(SlotImpl::new(base))),
-            last_value: Arc::new(Mutex::new(None)),
+            last_value,
             cb: None,
             connect_notify: Arc::new(Notify::new()),
             log_key,
