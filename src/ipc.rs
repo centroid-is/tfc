@@ -80,7 +80,8 @@ where
         + Type
         + Clone
         + detail::SupportedTypes
-        + JsonSchema,
+        + JsonSchema
+        + for<'a> zbus::export::serde::de::Deserialize<'a>,
 {
     pub fn new(bus: zbus::Connection, base: Base<T>) -> Self {
         let log_key_cp = base.log_key.clone();
@@ -179,17 +180,22 @@ impl<T: detail::SupportedTypes + zbus::zvariant::Type + Sync + Send + 'static> S
 #[interface(name = "is.centroid.Slot")]
 impl<T> SlotInterface<T>
 where
-    T: Clone + detail::SupportedTypes + zbus::zvariant::Type + Sync + Send + 'static + JsonSchema,
+    T: Clone
+        + detail::SupportedTypes
+        + zbus::zvariant::Type
+        + Sync
+        + Send
+        + 'static
+        + JsonSchema
+        + for<'a> zbus::export::serde::de::Deserialize<'a>,
 {
-    #[zbus(property)]
-    async fn value(&self) -> Result<zbus::zvariant::Value<'static>, zbus::fdo::Error> {
+    #[zbus(property, name = "Value")]
+    async fn value_prop(&self) -> Result<zbus::zvariant::Value<'static>, zbus::fdo::Error> {
         let guard = self.last_value.lock().await;
 
-        if let Some(value) = guard.clone() {
-            let value_as_value = <dyn detail::SupportedTypes>::to_value(&value);
-            Ok(value_as_value)
-        } else {
-            Err(zbus::fdo::Error::Failed("No value set".into()))
+        match *guard {
+            Some(ref value) => Ok(value.to_value()),
+            None => Err(zbus::fdo::Error::Failed("No value set".into())),
         }
     }
     #[zbus(property)]
@@ -202,6 +208,13 @@ where
                 zbus::fdo::Error::Failed(err_msg)
             })
     }
+    async fn tinker(&mut self, value: T) -> Result<(), zbus::fdo::Error> {
+        let mut guard = self.last_value.lock().await;
+        *guard = Some(value);
+        Ok(())
+    }
+    // #[zbus(signal)]
+    // async fn value(signal_ctxt: &SignalContext<'_>, message: &str) -> zbus::Result<()>;
 }
 
 pub struct SlotImpl<T> {
