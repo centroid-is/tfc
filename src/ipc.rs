@@ -63,6 +63,7 @@ impl<T: TypeName> Base<T> {
 pub struct Slot<T> {
     slot: Arc<RwLock<SlotImpl<T>>>,
     last_value: Arc<Mutex<Option<T>>>,
+    value_changed: Arc<Notify>,
     cb: Option<Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>>,
     connect_notify: Arc<Notify>,
     dbus_path: String,
@@ -90,7 +91,12 @@ where
         let log_key_cp = base.log_key.clone();
         let log_key = base.log_key.clone();
         let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
-        let client = SlotInterface::new(Arc::clone(&last_value), &log_key);
+        let value_changed = Arc::new(Notify::new());
+        let client = SlotInterface::new(
+            Arc::clone(&last_value),
+            Arc::clone(&value_changed),
+            &log_key,
+        );
         let dbus_path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
         let dbus_path_cp = dbus_path.clone();
         let bus_cp = bus.clone();
@@ -106,6 +112,7 @@ where
         Self {
             slot: Arc::new(RwLock::new(SlotImpl::new(base))),
             last_value,
+            value_changed,
             cb: None,
             connect_notify: Arc::new(Notify::new()),
             dbus_path,
@@ -120,8 +127,8 @@ where
         let shared_slot = Arc::clone(&self.slot);
         let shared_last_value = Arc::clone(&self.last_value);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
-        let shared_bus = self.bus.clone();
-        let shared_dbus_path = self.dbus_path.clone();
+        let shared_value_changed = Arc::clone(&self.value_changed);
+
         tokio::spawn(async move {
             loop {
                 let slot_guard = shared_slot.read().await; // Create a binding for the read guard
@@ -130,15 +137,7 @@ where
                         match result {
                             Ok(value) => {
                                 *shared_last_value.lock().await = Some(value);
-                                let value_guard = shared_last_value.lock().await;
-                                let value_ref = value_guard.as_ref().unwrap();
-                                wrapped_cb.lock().await(value_ref);
-                                let iface: zbus::InterfaceRef<SlotInterface<T>> = shared_bus
-                                    .object_server()
-                                    .interface(shared_dbus_path.as_str())
-                                    .await
-                                    .unwrap();
-                                let _ = SlotInterface::value(&iface.signal_context(), value_ref).await;
+                                shared_value_changed.notify_waiters();
                             }
                             Err(e) => {
                                 log!(target: &log_key, Level::Info,
@@ -151,6 +150,25 @@ where
                                 "Connecting to other signal, let's try receiving from it");
                     },
                 }
+            }
+        });
+
+        let shared_value_changed = Arc::clone(&self.value_changed);
+        let shared_last_value = Arc::clone(&self.last_value);
+        let shared_bus = self.bus.clone();
+        let shared_dbus_path = self.dbus_path.clone();
+        tokio::spawn(async move {
+            loop {
+                shared_value_changed.notified().await;
+                let value_guard = shared_last_value.lock().await;
+                let value_ref = value_guard.as_ref().unwrap();
+                wrapped_cb.lock().await(value_ref);
+                let iface: zbus::InterfaceRef<SlotInterface<T>> = shared_bus
+                    .object_server()
+                    .interface(shared_dbus_path.as_str())
+                    .await
+                    .unwrap();
+                let _ = SlotInterface::value(&iface.signal_context(), value_ref).await;
             }
         });
     }
@@ -170,22 +188,37 @@ mod detail {
     pub trait SupportedTypes {
         fn to_value(&self) -> zbus::zvariant::Value<'static>;
     }
-    impl SupportedTypes for i64 {
+    // make macro to impl for all types
+    macro_rules! impl_supported_types {
+        ($($t:ty),*) => {
+            $(
+                impl SupportedTypes for $t {
+                    fn to_value(&self) -> zbus::zvariant::Value<'static> {
+                        zbus::zvariant::Value::from(*self)
+                    }
+                }
+            )*
+        };
+    }
+    impl_supported_types!(bool, i64, u64, f64);
+    impl SupportedTypes for String {
         fn to_value(&self) -> zbus::zvariant::Value<'static> {
-            zbus::zvariant::Value::from(*self)
+            zbus::zvariant::Value::from(self.clone())
         }
     }
 }
 
 struct SlotInterface<T> {
     last_value: Arc<Mutex<Option<T>>>,
+    value_changed: Arc<Notify>,
     log_key: String,
 }
 
 impl<T: detail::SupportedTypes + zbus::zvariant::Type + Sync + Send + 'static> SlotInterface<T> {
-    pub fn new(last_value: Arc<Mutex<Option<T>>>, key: &str) -> Self {
+    pub fn new(last_value: Arc<Mutex<Option<T>>>, value_changed: Arc<Notify>, key: &str) -> Self {
         Self {
             last_value,
+            value_changed,
             log_key: key.to_string(),
         }
     }
@@ -231,6 +264,7 @@ where
     async fn tinker(&mut self, value: T) -> Result<(), zbus::fdo::Error> {
         let mut guard = self.last_value.lock().await;
         *guard = Some(value);
+        self.value_changed.notify_waiters();
         Ok(())
     }
     #[zbus(signal)]
