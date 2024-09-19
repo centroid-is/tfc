@@ -65,6 +65,8 @@ pub struct Slot<T> {
     last_value: Arc<Mutex<Option<T>>>,
     cb: Option<Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>>,
     connect_notify: Arc<Notify>,
+    dbus_path: String,
+    bus: zbus::Connection,
     log_key: String,
 }
 
@@ -81,20 +83,23 @@ where
         + Clone
         + detail::SupportedTypes
         + JsonSchema
-        + for<'a> zbus::export::serde::de::Deserialize<'a>,
+        + for<'a> zbus::export::serde::de::Deserialize<'a>
+        + zbus::export::serde::ser::Serialize,
 {
     pub fn new(bus: zbus::Connection, base: Base<T>) -> Self {
         let log_key_cp = base.log_key.clone();
         let log_key = base.log_key.clone();
         let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
         let client = SlotInterface::new(Arc::clone(&last_value), &log_key);
-        let path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
+        let dbus_path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
+        let dbus_path_cp = dbus_path.clone();
+        let bus_cp = bus.clone();
 
         tokio::spawn(async move {
             // log if error
-            let _ = bus
+            let _ = bus_cp
                 .object_server()
-                .at(path, client)
+                .at(dbus_path_cp, client)
                 .await
                 .expect(&format!("Error registering object: {}", log_key_cp));
         });
@@ -103,6 +108,8 @@ where
             last_value,
             cb: None,
             connect_notify: Arc::new(Notify::new()),
+            dbus_path,
+            bus,
             log_key,
         }
     }
@@ -112,8 +119,9 @@ where
         let log_key = self.log_key.clone();
         let shared_slot = Arc::clone(&self.slot);
         let shared_last_value = Arc::clone(&self.last_value);
-        let shared_cb = Arc::clone(&wrapped_cb);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
+        let shared_bus = self.bus.clone();
+        let shared_dbus_path = self.dbus_path.clone();
         tokio::spawn(async move {
             loop {
                 let slot_guard = shared_slot.read().await; // Create a binding for the read guard
@@ -122,9 +130,15 @@ where
                         match result {
                             Ok(value) => {
                                 *shared_last_value.lock().await = Some(value);
-                                if let Some(ref value) = *shared_last_value.lock().await {
-                                    shared_cb.lock().await(value);
-                                }
+                                let value_guard = shared_last_value.lock().await;
+                                let value_ref = value_guard.as_ref().unwrap();
+                                wrapped_cb.lock().await(value_ref);
+                                let iface: zbus::InterfaceRef<SlotInterface<T>> = shared_bus
+                                    .object_server()
+                                    .interface(shared_dbus_path.as_str())
+                                    .await
+                                    .unwrap();
+                                let _ = SlotInterface::value(&iface.signal_context(), value_ref).await;
                             }
                             Err(e) => {
                                 log!(target: &log_key, Level::Info,
@@ -187,7 +201,8 @@ where
         + Send
         + 'static
         + JsonSchema
-        + for<'a> zbus::export::serde::de::Deserialize<'a>,
+        + for<'a> zbus::export::serde::de::Deserialize<'a>
+        + zbus::export::serde::ser::Serialize,
 {
     #[zbus(property, name = "Value")]
     async fn value_prop(&self) -> Result<zbus::zvariant::Value<'static>, zbus::fdo::Error> {
@@ -200,21 +215,26 @@ where
     }
     #[zbus(property)]
     async fn schema(&self) -> Result<String, zbus::fdo::Error> {
-        serde_json::to_string_pretty(&schemars::schema_for!(T))
-            .map_err(|e| Box::new(e) as Box<dyn Error>)
-            .map_err(|e| {
-                let err_msg = format!("Error serializing to JSON schema: {}", e);
-                log!(target: &self.log_key, Level::Error, "{}", err_msg);
-                zbus::fdo::Error::Failed(err_msg)
-            })
+        serde_json::to_string_pretty(&schemars::schema_for!(T)).map_err(|e| {
+            let err_msg = format!("Error serializing to JSON schema: {}", e);
+            log!(target: &self.log_key, Level::Error, "{}", err_msg);
+            zbus::fdo::Error::Failed(err_msg)
+        })
+    }
+    async fn last_value(&self) -> Result<T, zbus::fdo::Error> {
+        let guard = self.last_value.lock().await;
+        match *guard {
+            Some(ref value) => Ok(value.clone()),
+            None => Err(zbus::fdo::Error::Failed("No value set".into())),
+        }
     }
     async fn tinker(&mut self, value: T) -> Result<(), zbus::fdo::Error> {
         let mut guard = self.last_value.lock().await;
         *guard = Some(value);
         Ok(())
     }
-    // #[zbus(signal)]
-    // async fn value(signal_ctxt: &SignalContext<'_>, message: &str) -> zbus::Result<()>;
+    #[zbus(signal)]
+    async fn value(signal_ctxt: &zbus::SignalContext<'_>, val: &T) -> zbus::Result<()>;
 }
 
 pub struct SlotImpl<T> {
