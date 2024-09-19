@@ -27,6 +27,7 @@ quantities = { version = "0.13.2", features = [
 ] }
 futures-channel = "0.3.30"
 futures = "0.3.30"
+async-trait = "0.1.82"
 
 [dev-dependencies]
 rand = "0.8.5"

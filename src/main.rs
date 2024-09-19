@@ -1,4 +1,5 @@
 mod confman;
+mod filter;
 mod ipc;
 mod ipc_ruler_client;
 mod logger;
