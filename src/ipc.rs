@@ -247,7 +247,7 @@ where
             None => Err(zbus::fdo::Error::Failed("No value set".into())),
         }
     }
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "const"))]
     async fn schema(&self) -> Result<String, zbus::fdo::Error> {
         serde_json::to_string_pretty(&schemars::schema_for!(T)).map_err(|e| {
             let err_msg = format!("Error serializing to JSON schema: {}", e);
@@ -484,7 +484,7 @@ where
             None => Err(zbus::fdo::Error::Failed("No value set".into())),
         }
     }
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "const"))]
     async fn schema(&self) -> Result<String, zbus::fdo::Error> {
         serde_json::to_string_pretty(&schemars::schema_for!(T)).map_err(|e| {
             let err_msg = format!("Error serializing to JSON schema: {}", e);
