@@ -24,6 +24,7 @@ fn endpoint(file_name: &str) -> String {
     format!("{}{}{}", FILE_PREFIX, FILE_PATH, file_name)
 }
 
+#[derive(Clone)]
 pub struct Base<T> {
     pub name: String,
     pub description: Option<String>,
@@ -374,12 +375,141 @@ where
 }
 
 pub struct Signal<T> {
+    signal: Arc<Mutex<SignalImpl<T>>>,
+    base: Base<T>,
+    dbus_path: String,
+    bus: zbus::Connection,
+    log_key: String,
+}
+
+impl<T> Signal<T>
+where
+    T: TypeName
+        + TypeIdentifier
+        + SerializeSize
+        + Serialize
+        + Deserialize
+        + Send
+        + Sync
+        + 'static //
+        // todo is this proper below
+        + Type
+        + Clone
+        + detail::SupportedTypes
+        + JsonSchema
+        + std::fmt::Debug
+        + for<'a> zbus::export::serde::de::Deserialize<'a>
+        + zbus::export::serde::ser::Serialize,
+{
+    pub fn new(bus: zbus::Connection, base: Base<T>) -> Self {
+        let log_key_cp = base.log_key.clone();
+        let log_key = base.log_key.clone();
+        let client = SignalInterface::new(Arc::clone(&base.value), &log_key);
+        let dbus_path = format!(
+            "/is/centroid/Signal/{}",
+            Base::<T>::type_and_name(&base.name)
+        );
+        let dbus_path_cp = dbus_path.clone();
+        let bus_cp = bus.clone();
+        let base_cp = base.clone();
+        let signal = Arc::new(Mutex::new(SignalImpl::new(base_cp)));
+        let signal_cp = Arc::clone(&signal);
+        tokio::spawn(async move {
+            let _ = signal_cp.lock().await.init().await;
+            let _ = bus_cp
+                .object_server()
+                .at(dbus_path_cp, client)
+                .await
+                .expect(&format!("Error registering object: {}", log_key_cp));
+        });
+        Self {
+            signal,
+            base,
+            dbus_path,
+            bus,
+            log_key,
+        }
+    }
+    pub async fn send(&mut self, value: T) -> Result<(), Box<dyn Error>> {
+        self.signal.lock().await.send(value).await?;
+        let value_guard = self.base.value.read().await;
+        let value_ref = value_guard.as_ref().unwrap();
+        let iface: zbus::InterfaceRef<SignalInterface<T>> = self
+            .bus
+            .object_server()
+            .interface(self.dbus_path.as_str())
+            .await
+            .unwrap();
+        SignalInterface::value(&iface.signal_context(), value_ref).await?;
+        Ok(())
+    }
+    pub fn full_name(&self) -> String {
+        self.base.full_name()
+    }
+}
+
+struct SignalInterface<T> {
+    last_value: Arc<RwLock<Option<T>>>,
+    log_key: String,
+}
+
+impl<T: detail::SupportedTypes + zbus::zvariant::Type + Sync + Send + 'static> SignalInterface<T> {
+    pub fn new(last_value: Arc<RwLock<Option<T>>>, key: &str) -> Self {
+        Self {
+            last_value,
+            log_key: key.to_string(),
+        }
+    }
+}
+
+#[interface(name = "is.centroid.Signal")]
+impl<T> SignalInterface<T>
+where
+    T: Clone
+        + detail::SupportedTypes
+        + zbus::zvariant::Type
+        + Sync
+        + Send
+        + 'static
+        + JsonSchema
+        + for<'a> zbus::export::serde::de::Deserialize<'a>
+        + zbus::export::serde::ser::Serialize,
+{
+    #[zbus(property, name = "Value")]
+    async fn value_prop(&self) -> Result<zbus::zvariant::Value<'static>, zbus::fdo::Error> {
+        let guard = self.last_value.read().await;
+
+        match *guard {
+            Some(ref value) => Ok(value.to_value()),
+            None => Err(zbus::fdo::Error::Failed("No value set".into())),
+        }
+    }
+    #[zbus(property)]
+    async fn schema(&self) -> Result<String, zbus::fdo::Error> {
+        serde_json::to_string_pretty(&schemars::schema_for!(T)).map_err(|e| {
+            let err_msg = format!("Error serializing to JSON schema: {}", e);
+            log!(target: &self.log_key, Level::Error, "{}", err_msg);
+            zbus::fdo::Error::Failed(err_msg)
+        })
+    }
+    async fn last_value(&self) -> Result<T, zbus::fdo::Error> {
+        let guard = self.last_value.read().await;
+        match *guard {
+            Some(ref value) => Ok(value.clone()),
+            None => Err(zbus::fdo::Error::Failed("No value set".into())),
+        }
+    }
+    #[zbus(signal)]
+    async fn value(signal_ctxt: &zbus::SignalContext<'_>, val: &T) -> zbus::Result<()>;
+}
+
+pub struct SignalImpl<T> {
     base: Base<T>,
     sock: Arc<Mutex<PubSocket>>,
     monitor: Option<mpsc::Receiver<SocketEvent>>,
 }
 
-impl<T> Signal<T>
+impl<T> SignalImpl<T>
 where
     T: TypeName
         + TypeIdentifier

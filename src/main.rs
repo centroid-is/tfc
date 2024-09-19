@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _config = ConfMan::<Greeter>::new(_conn.clone(), "greeterfu_uf0");
 
-    let mut i64_signal = Signal::<i64>::new(Base::new("foo", None));
+    let mut i64_signal = Signal::<i64>::new(_conn.clone(), Base::new("foo", None));
 
     // let _ = Application::new(&i64_signal.full_name());
 
@@ -89,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = i64_slot.connect(i64_signal.full_name().as_str());
     println!("Slot connected");
 
-    i64_signal.init().await?;
+    // i64_signal.init().await?;
 
     tokio::spawn(async move {
         loop {
