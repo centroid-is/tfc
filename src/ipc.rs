@@ -16,6 +16,7 @@ use zeromq::{
     ZmqMessage,
 };
 
+use crate::ipc_ruler_client::IpcRulerProxy;
 use crate::progbase;
 
 const FILE_PREFIX: &'static str = "ipc://";
@@ -102,6 +103,8 @@ where
         let dbus_path_cp = dbus_path.clone();
         let bus_cp = bus.clone();
 
+        let name = base.full_name();
+        let description = base.description.clone().unwrap_or(String::new());
         tokio::spawn(async move {
             // log if error
             let _ = bus_cp
@@ -109,6 +112,23 @@ where
                 .at(dbus_path_cp, client)
                 .await
                 .expect(&format!("Error registering object: {}", log_key_cp));
+            let proxy = IpcRulerProxy::builder(&bus_cp)
+                .cache_properties(zbus::CacheProperties::No)
+                .build()
+                .await
+                .unwrap();
+            loop {
+                let res = proxy
+                    .register_slot(name.as_str(), description.as_str(), T::type_identifier())
+                    .await;
+                if res.is_ok() {
+                    break;
+                } else {
+                    log!(target: &log_key_cp, Level::Trace,
+                    "Slot Registration failed: '{}', will try again in 1s", res.err().unwrap());
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                }
+            }
         });
         Self {
             slot: Arc::new(RwLock::new(SlotImpl::new(base))),
@@ -414,6 +434,9 @@ where
         let base_cp = base.clone();
         let signal = Arc::new(Mutex::new(SignalImpl::new(base_cp)));
         let signal_cp = Arc::clone(&signal);
+
+        let name = base.full_name();
+        let description = base.description.clone().unwrap_or(String::new());
         tokio::spawn(async move {
             let _ = signal_cp.lock().await.init().await;
             let _ = bus_cp
@@ -421,6 +444,23 @@ where
                 .at(dbus_path_cp, client)
                 .await
                 .expect(&format!("Error registering object: {}", log_key_cp));
+            let proxy = IpcRulerProxy::builder(&bus_cp)
+                .cache_properties(zbus::CacheProperties::No)
+                .build()
+                .await
+                .unwrap();
+            loop {
+                let res = proxy
+                    .register_signal(name.as_str(), description.as_str(), T::type_identifier())
+                    .await;
+                if res.is_ok() {
+                    break;
+                } else {
+                    log!(target: &log_key_cp, Level::Trace,
+                "Signal Registration failed: '{}', will try again in 1s", res.err().unwrap());
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                }
+            }
         });
         Self {
             signal,

@@ -1,5 +1,6 @@
 mod confman;
 mod ipc;
+mod ipc_ruler_client;
 mod logger;
 mod progbase;
 
@@ -62,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     progbase::init();
     let _ = logger::init_combined_logger();
 
-    let _conn = connection::Builder::session()?
+    let _conn = connection::Builder::system()?
         .name(format!(
             "is.centroid.{}.{}",
             progbase::exe_name(),
