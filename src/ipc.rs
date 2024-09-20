@@ -5,16 +5,13 @@ use futures_channel::mpsc;
 use log::{log, Level};
 use quantities::mass::Mass;
 use schemars::JsonSchema;
-use std::fmt::format;
-use std::io::Cursor;
 use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc};
 use tokio::select;
 use tokio::sync::{Mutex, Notify, RwLock};
 use zbus::{interface, zvariant::Type};
 use zeromq::{
-    PubSocket, Socket, SocketEvent, SocketOptions, SocketRecv, SocketSend, SubSocket, ZmqError,
-    ZmqMessage,
+    PubSocket, Socket, SocketEvent, SocketRecv, SocketSend, SubSocket, ZmqError, ZmqMessage,
 };
 
 use crate::filter::AnyFilterDecl;
@@ -73,7 +70,6 @@ where
 {
     slot: Arc<RwLock<SlotImpl<T>>>,
     last_value: Arc<Mutex<Option<T>>>,
-    value_changed: Arc<Notify>,
     new_value_channel: Arc<Mutex<mpsc::Receiver<T>>>,
     cb: Option<Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>>,
     connect_notify: Arc<Notify>,
@@ -113,7 +109,6 @@ where
         let log_key_cp = base.log_key.clone();
         let log_key = base.log_key.clone();
         let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
-        let value_changed = Arc::new(Notify::new());
         let (new_value_sender, new_value_receiver) = mpsc::channel(10);
         let client = SlotInterface::new(Arc::clone(&last_value), new_value_sender, &log_key);
         let dbus_path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
@@ -155,7 +150,6 @@ where
         Self {
             slot: Arc::new(RwLock::new(SlotImpl::new(base))),
             last_value,
-            value_changed,
             new_value_channel: Arc::new(Mutex::new(new_value_receiver)),
             cb: None,
             connect_notify: Arc::new(Notify::new()),
@@ -170,7 +164,6 @@ where
         value: T,
         shared_filters: Arc<Mutex<Filters<T>>>,
         shared_last_value: Arc<Mutex<Option<T>>>,
-        shared_value_changed: Arc<Notify>,
         shared_cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>,
         shared_bus: zbus::Connection,
         shared_dbus_path: &str,
@@ -180,7 +173,6 @@ where
         match filtered_value {
             Ok(filtered) => {
                 *shared_last_value.lock().await = Some(filtered);
-                shared_value_changed.notify_waiters();
                 let value_guard = shared_last_value.lock().await;
                 let value_ref = value_guard.as_ref().unwrap();
                 shared_cb.lock().await(value_ref);
@@ -208,7 +200,6 @@ where
         let shared_slot: Arc<RwLock<SlotImpl<T>>> = Arc::clone(&self.slot);
         let shared_last_value = Arc::clone(&self.last_value);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
-        let shared_value_changed = Arc::clone(&self.value_changed);
         let shared_filters = Arc::clone(&self.filters);
         let shared_new_value_channel = Arc::clone(&self.new_value_channel);
         let shared_bus = self.bus.clone();
@@ -226,7 +217,6 @@ where
                                     value,
                                     Arc::clone(&shared_filters),
                                     Arc::clone(&shared_last_value),
-                                    Arc::clone(&shared_value_changed),
                                     Arc::clone(&shared_cb),
                                     shared_bus.clone(),
                                     shared_dbus_path.as_str(),
@@ -250,7 +240,6 @@ where
                                     value,
                                     Arc::clone(&shared_filters),
                                     Arc::clone(&shared_last_value),
-                                    Arc::clone(&shared_value_changed),
                                     Arc::clone(&shared_cb),
                                     shared_bus.clone(),
                                     shared_dbus_path.as_str(),
