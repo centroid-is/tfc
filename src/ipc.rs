@@ -16,6 +16,7 @@ use zeromq::{
     ZmqMessage,
 };
 
+use crate::filter::Filters;
 use crate::ipc_ruler_client::IpcRulerProxy;
 use crate::progbase;
 
@@ -68,6 +69,7 @@ pub struct Slot<T> {
     value_changed: Arc<Notify>,
     cb: Option<Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>>,
     connect_notify: Arc<Notify>,
+    filters: Arc<Mutex<Filters<T>>>,
     dbus_path: String,
     bus: zbus::Connection,
     log_key: String,
@@ -81,6 +83,7 @@ where
         + Send
         + Sync
         + 'static //
+        + PartialEq
         // todo is this proper below
         + Type
         + Clone
@@ -130,12 +133,18 @@ where
                 }
             }
         });
+        let filters = Arc::new(Mutex::new(Filters::new(
+            bus.clone(),
+            Base::<T>::type_and_name(&base.name).as_str(),
+            Arc::clone(&last_value),
+        )));
         Self {
             slot: Arc::new(RwLock::new(SlotImpl::new(base))),
             last_value,
             value_changed,
             cb: None,
             connect_notify: Arc::new(Notify::new()),
+            filters,
             dbus_path,
             bus,
             log_key,
@@ -149,6 +158,7 @@ where
         let shared_last_value = Arc::clone(&self.last_value);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
         let shared_value_changed = Arc::clone(&self.value_changed);
+        let shared_filters = Arc::clone(&self.filters);
 
         tokio::spawn(async move {
             loop {
@@ -157,8 +167,14 @@ where
                     result = slot_guard.recv() => {
                         match result {
                             Ok(value) => {
-                                *shared_last_value.lock().await = Some(value);
-                                shared_value_changed.notify_waiters();
+                                let filtered_value = shared_filters.lock().await.process(value).await;
+                                if filtered_value.is_ok() {
+                                    *shared_last_value.lock().await = Some(filtered_value.unwrap());
+                                    shared_value_changed.notify_waiters();
+                                } else {
+                                    log!(target: &log_key, Level::Trace,
+                                        "Filtered out value reason: {}", filtered_value.err().unwrap());
+                                }
                             }
                             Err(e) => {
                                 log!(target: &log_key, Level::Info,

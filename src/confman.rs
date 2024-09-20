@@ -1,5 +1,6 @@
 use core::panic;
 use log::{log, Level};
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -9,7 +10,7 @@ use std::{
     io::{Read, Write},
     marker::PhantomData,
     path::PathBuf,
-    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::Arc,
 };
 use zbus::interface;
 
@@ -102,6 +103,11 @@ impl<
         }
     }
 
+    pub fn with_default(mut self, value: T) -> Self {
+        *self.write().value_mut() = value;
+        self
+    }
+
     /// Creates a new `ConfMan` instance for testing purposes.
     ///
     /// # Parameters
@@ -120,11 +126,11 @@ impl<
         }
     }
 
-    /// Returns a mutex guard to the configuration value.
+    /// Returns a read guard to the configuration value.
     ///
     /// # Returns
-    /// A `MutexGuard` to the inner value of the configuration.
-    pub fn value(&self) -> RwLockReadGuard<'_, T> {
+    /// A `RwLockReadGuard` to the inner value of the configuration.
+    pub fn read(&self) -> RwLockReadGuard<'_, T> {
         self.storage.value()
     }
 
@@ -132,7 +138,7 @@ impl<
     ///
     /// # Returns
     /// A `Change<Self, T>` instance used for making modifications to the configuration.
-    pub fn make_change(&mut self) -> Change<Self, T> {
+    pub fn write(&mut self) -> Change<Self, T> {
         Change::new(self)
     }
 
@@ -370,12 +376,12 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> FileStorag
         &self.filename
     }
 
-    fn value(&self) -> std::sync::RwLockReadGuard<'_, T> {
-        self.value.read().unwrap()
+    fn value(&self) -> RwLockReadGuard<'_, T> {
+        self.value.read()
     }
 
-    fn value_mut(&self) -> std::sync::RwLockWriteGuard<'_, T> {
-        self.value.write().unwrap()
+    fn value_mut(&self) -> RwLockWriteGuard<'_, T> {
+        self.value.write()
     }
 
     fn save_to_file(&self) -> Result<(), Box<dyn Error>> {
@@ -457,7 +463,7 @@ mod tests {
     fn struct_test() {
         setup();
         let config: ConfMan<MyStruct> = ConfMan::new_test("key1");
-        assert_eq!(config.value().my_int, 5);
+        assert_eq!(config.read().my_int, 5);
     }
 
     #[test]
@@ -465,7 +471,7 @@ mod tests {
         setup();
         let mut config: ConfMan<MyStruct> = ConfMan::new_test("key");
         // TODO can we use DerefMut instead of value_mut?
-        config.make_change().value_mut().my_int = 42;
-        assert_eq!(config.value().my_int, 42);
+        config.write().value_mut().my_int = 42;
+        assert_eq!(config.read().my_int, 42);
     }
 }
