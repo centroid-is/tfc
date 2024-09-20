@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::cmp::PartialEq;
 use std::error::Error;
 use std::marker::{Send, Sync};
+use std::ops::Add;
+use std::ops::Not;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -18,11 +20,11 @@ pub trait Filter<T> {
     ) -> Result<T, Box<dyn Error + Send + Sync>>;
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
-pub struct NewState {}
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+struct FilterNewState {}
 
 #[async_trait]
-impl<T: Send + Sync + 'static + PartialEq> Filter<T> for NewState {
+impl<T: Send + Sync + 'static + PartialEq> Filter<T> for FilterNewState {
     async fn filter(
         &self,
         value: T,
@@ -41,24 +43,141 @@ impl<T: Send + Sync + 'static + PartialEq> Filter<T> for NewState {
     }
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
-enum FilterVariant {
-    NewState(NewState),
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+struct FilterInvert {}
+
+#[async_trait]
+impl<T: Send + Sync + 'static + PartialEq + Not<Output = T>> Filter<T> for FilterInvert {
+    async fn filter(&self, value: T, _: Option<&T>) -> Result<T, Box<dyn Error + Send + Sync>> {
+        Ok(!value)
+    }
 }
 
-pub struct Filters<T> {
-    filters: ConfMan<Vec<FilterVariant>>,
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+struct FilterOffset<T> {
+    offset: T,
+}
+
+#[async_trait]
+impl<T: Send + Sync + 'static + PartialEq + Add<T, Output = T> + Clone> Filter<T>
+    for FilterOffset<T>
+{
+    async fn filter(&self, value: T, _: Option<&T>) -> Result<T, Box<dyn Error + Send + Sync>> {
+        Ok(value + self.offset.clone())
+    }
+}
+
+pub trait AnyFilterDecl {
+    type ValueT;
+    type Type: Filter<Self::ValueT>
+        + Default
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + JsonSchema
+        + Send
+        + Sync
+        + 'static;
+
+    fn default_filters() -> Vec<Self::Type>;
+}
+
+macro_rules! impl_any_filter_decl {
+    ($type:ty, $enum_name:ident, $default_filters:expr, { $($variant_name:ident($filter_type:ty)),* $(,)? }) => {
+        impl AnyFilterDecl for $type {
+            type ValueT = $type;
+            type Type = $enum_name;
+
+            fn default_filters() -> Vec<Self::Type> {
+                $default_filters
+            }
+        }
+
+        #[derive(Serialize, Deserialize, JsonSchema)]
+        pub enum $enum_name {
+            $($variant_name($filter_type)),*
+        }
+        impl Default for $enum_name {
+            fn default() -> Self {
+                $enum_name::NewState(FilterNewState {})
+            }
+        }
+
+        #[async_trait]
+        impl Filter<$type> for $enum_name {
+            async fn filter(
+                &self,
+                new_value: $type,
+                old_value: Option<&$type>,
+            ) -> Result<$type, Box<dyn Error + Send + Sync>> {
+                match self {
+                    $(
+                        $enum_name::$variant_name(filter) => {
+                            filter.filter(new_value, old_value).await
+                        }
+                    ),*
+                }
+            }
+        }
+    };
+}
+
+impl_any_filter_decl!(
+    bool,
+    AnyFilterBool,
+    vec![AnyFilterBool::NewState(FilterNewState {})],
+    {
+        NewState(FilterNewState),
+        Invert(FilterInvert)
+        // Add other filters specific to bool
+    }
+);
+
+impl_any_filter_decl!(
+    i64,
+    AnyFilterI64,
+    vec![AnyFilterI64::NewState(FilterNewState {})],
+    {
+        NewState(FilterNewState),
+        Offset(FilterOffset<i64>)
+        // Add other filters specific to i64
+    }
+);
+
+pub struct Filters<T>
+where
+    T: AnyFilterDecl + Send + Sync + 'static + PartialEq,
+    <T as AnyFilterDecl>::Type: Filter<T>
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + JsonSchema
+        + Default
+        + Send
+        + Sync
+        + 'static,
+{
+    filters: ConfMan<Vec<<T as AnyFilterDecl>::Type>>,
     last_value: Arc<Mutex<Option<T>>>,
 }
 
 impl<T> Filters<T>
 where
-    T: Send + Sync + 'static + PartialEq,
+    T: AnyFilterDecl + Send + Sync + 'static + PartialEq,
+    <T as AnyFilterDecl>::Type: Filter<T>
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + JsonSchema
+        + Default
+        + Send
+        + Sync
+        + 'static,
 {
-    pub fn new(bus: zbus::Connection, key: &str, last_value: Arc<Mutex<Option<T>>>) -> Self {
+    pub fn new(bus: zbus::Connection, key: &str, last_value: Arc<Mutex<Option<T>>>) -> Self
+    where
+        <T as AnyFilterDecl>::Type:
+            Send + Sync + Serialize + for<'de> Deserialize<'de> + JsonSchema,
+    {
         Filters {
-            filters: ConfMan::new(bus, key)
-                .with_default(vec![FilterVariant::NewState(NewState {})]),
+            filters: ConfMan::new(bus, key).with_default(<T as AnyFilterDecl>::default_filters()),
             last_value,
         }
     }
@@ -70,11 +189,7 @@ where
             if result.is_err() {
                 break;
             }
-            match filter {
-                FilterVariant::NewState(filter) => {
-                    result = filter.filter(result.unwrap(), old_value).await;
-                }
-            }
+            result = filter.filter(result?, old_value).await;
         }
         result
     }

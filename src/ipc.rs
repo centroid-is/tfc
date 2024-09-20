@@ -17,6 +17,8 @@ use zeromq::{
     ZmqMessage,
 };
 
+use crate::filter::AnyFilterDecl;
+use crate::filter::Filter;
 use crate::filter::Filters;
 use crate::ipc_ruler_client::IpcRulerProxy;
 use crate::progbase;
@@ -64,7 +66,11 @@ impl<T: TypeName> Base<T> {
     }
 }
 
-pub struct Slot<T> {
+pub struct Slot<T>
+where
+    T: Send + Sync + 'static + PartialEq + AnyFilterDecl,
+    <T as AnyFilterDecl>::Type: Filter<T>,
+{
     slot: Arc<RwLock<SlotImpl<T>>>,
     last_value: Arc<Mutex<Option<T>>>,
     value_changed: Arc<Notify>,
@@ -92,9 +98,18 @@ where
         + detail::SupportedTypes
         + JsonSchema
         + for<'a> zbus::export::serde::de::Deserialize<'a>
-        + zbus::export::serde::ser::Serialize,
+        + zbus::export::serde::ser::Serialize
+        + AnyFilterDecl,
+    <T as AnyFilterDecl>::Type: Filter<T>,
 {
-    pub fn new(bus: zbus::Connection, base: Base<T>) -> Self {
+    pub fn new(bus: zbus::Connection, base: Base<T>) -> Self
+    where
+        <T as AnyFilterDecl>::Type: Send
+            + Sync
+            + zbus::export::serde::ser::Serialize
+            + for<'a> zbus::export::serde::de::Deserialize<'a>
+            + JsonSchema,
+    {
         let log_key_cp = base.log_key.clone();
         let log_key = base.log_key.clone();
         let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
@@ -134,7 +149,7 @@ where
         });
         let filters = Arc::new(Mutex::new(Filters::new(
             bus.clone(),
-            Base::<T>::type_and_name(&base.name).as_str(),
+            format!("filters/{}", Base::<T>::type_and_name(&base.name)).as_str(),
             Arc::clone(&last_value),
         )));
         Self {
@@ -183,11 +198,14 @@ where
         }
     }
 
-    pub fn recv(&mut self, callback: Box<dyn Fn(&T) + Send + Sync>) {
+    pub fn recv(&mut self, callback: Box<dyn Fn(&T) + Send + Sync>)
+    where
+        <T as AnyFilterDecl>::Type: Send + Sync + Filter<T>,
+    {
         let shared_cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>> = Arc::new(Mutex::new(callback));
         self.cb = Some(Arc::clone(&shared_cb));
         let log_key = self.log_key.clone();
-        let shared_slot = Arc::clone(&self.slot);
+        let shared_slot: Arc<RwLock<SlotImpl<T>>> = Arc::clone(&self.slot);
         let shared_last_value = Arc::clone(&self.last_value);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
         let shared_value_changed = Arc::clone(&self.value_changed);
@@ -251,7 +269,7 @@ where
         });
     }
     pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let shared_slot = Arc::clone(&self.slot);
+        let shared_slot: Arc<RwLock<SlotImpl<T>>> = Arc::clone(&self.slot);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
         let name = signal_name.to_string();
         tokio::spawn(async move {

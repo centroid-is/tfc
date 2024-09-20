@@ -1,3 +1,11 @@
+// mod confman;
+// mod filter;
+// mod progbase;
+
+// fn main() {
+//     println!("Hello, world!");
+// }
+
 mod confman;
 mod filter;
 mod ipc;
@@ -82,6 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let _ = Application::new(&i64_signal.full_name());
 
     let mut i64_raw_slot = SlotImpl::<i64>::new(Base::new("hello", None));
+    let mut bool_slot = Slot::<bool>::new(_conn.clone(), Base::new("bar", None));
     let mut i64_slot = Slot::<i64>::new(_conn.clone(), Base::new("bar", None));
     i64_slot.recv(Box::new(|&val| {
         println!("Received value: {:?}", val);
