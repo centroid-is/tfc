@@ -90,14 +90,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let _ = Application::new(&i64_signal.full_name());
 
     let mut i64_raw_slot = SlotImpl::<i64>::new(Base::new("hello", None));
-    let mut bool_slot = Slot::<bool>::new(_conn.clone(), Base::new("bar", None));
+    // let mut bool_slot = Slot::<bool>::new(_conn.clone(), Base::new("bar", None));
     let mut i64_slot = Slot::<i64>::new(_conn.clone(), Base::new("bar", None));
     i64_slot.recv(Box::new(|&val| {
         println!("Received value: {:?}", val);
     }));
     println!("Slot created");
-    let _ = i64_raw_slot.connect(i64_signal.full_name().as_str());
-    let _ = i64_slot.connect(i64_signal.full_name().as_str());
+    // let _ = i64_raw_slot.connect(i64_signal.full_name().as_str());
+    // let _ = i64_slot.connect(i64_signal.full_name().as_str());
     println!("Slot connected");
 
     // i64_signal.init().await?;

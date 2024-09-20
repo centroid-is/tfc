@@ -106,17 +106,29 @@ where
             + for<'a> zbus::export::serde::de::Deserialize<'a>
             + JsonSchema,
     {
-        let log_key_cp = base.log_key.clone();
+        let name = base.full_name();
+        let description = base.description.clone().unwrap_or(String::new());
+        let dbus_path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
         let log_key = base.log_key.clone();
+
         let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
+        let connect_notify = Arc::new(Notify::new());
+        let filters = Arc::new(Mutex::new(Filters::new(
+            bus.clone(),
+            format!("filters/{}", Base::<T>::type_and_name(&base.name)).as_str(),
+            Arc::clone(&last_value),
+        )));
+        let slot = Arc::new(RwLock::new(SlotImpl::new(base)));
+
+        let log_key_cp = log_key.clone();
         let (new_value_sender, new_value_receiver) = mpsc::channel(10);
         let client = SlotInterface::new(Arc::clone(&last_value), new_value_sender, &log_key);
-        let dbus_path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
         let dbus_path_cp = dbus_path.clone();
         let bus_cp = bus.clone();
 
-        let name = base.full_name();
-        let description = base.description.clone().unwrap_or(String::new());
+        let shared_slot: Arc<RwLock<SlotImpl<T>>> = Arc::clone(&slot);
+        let shared_connect_notify = Arc::clone(&connect_notify);
+
         tokio::spawn(async move {
             // log if error
             let _ = bus_cp
@@ -141,18 +153,39 @@ where
                     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                 }
             }
+            loop {
+                let res = proxy.receive_connection_change().await;
+                if res.is_ok() {
+                    let args = res.unwrap().next().await.unwrap();
+                    let slot_name = args.args().unwrap().slot_name().to_string();
+                    if slot_name == name {
+                        shared_connect_notify.notify_waiters();
+                        // let _ = shared_slot.write().await.disconnect().await;
+                        let signal_name = args.args().unwrap().signal_name().to_string();
+                        log!(target: &log_key_cp, Level::Trace,
+                            "Connection change received for slot: {}, signal: {}", slot_name, signal_name);
+                        if signal_name.is_empty() {
+                            continue;
+                        }
+                        let res = shared_slot.write().await.async_connect(&signal_name).await;
+                        log!(target: &log_key_cp, Level::Trace,
+                            "Connect result: {}", res.is_ok());
+                        if res.is_err() {
+                            log!(target: &log_key_cp, Level::Error,
+                                "Failed to connect to signal: {}", res.err().unwrap());
+                        }
+                    }
+                } else {
+                }
+            }
         });
-        let filters = Arc::new(Mutex::new(Filters::new(
-            bus.clone(),
-            format!("filters/{}", Base::<T>::type_and_name(&base.name)).as_str(),
-            Arc::clone(&last_value),
-        )));
+
         Self {
-            slot: Arc::new(RwLock::new(SlotImpl::new(base))),
+            slot,
             last_value,
             new_value_channel: Arc::new(Mutex::new(new_value_receiver)),
             cb: None,
-            connect_notify: Arc::new(Notify::new()),
+            connect_notify,
             filters,
             dbus_path,
             bus,
@@ -401,17 +434,20 @@ where
         signal_name: &str,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // todo reconnect
-        Self::async_connect_(
+        let res = Self::async_connect_(
             self.base.log_key.as_str(),
             Arc::clone(&self.sock),
             signal_name,
         )
-        .await
+        .await;
+        if res.is_ok() {
+            *self.is_connected.lock().await = true;
+            self.connect_notify.notify_waiters();
+        }
+        res
     }
     pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         let shared_sock = Arc::clone(&self.sock);
-        let shared_connect_notify = Arc::clone(&self.connect_notify);
-        let shared_is_connected = Arc::clone(&self.is_connected);
         let signal_name_str = signal_name.to_string();
         let log_key_cp = self.base.log_key.clone();
         tokio::spawn(async move {
@@ -434,8 +470,6 @@ where
                     Either::Left(Ok(_)) => {
                         log!(target: &log_key_cp, Level::Trace,
                             "Connect to: {:?} succesful", signal_name_str);
-                        *shared_is_connected.lock().await = true;
-                        shared_connect_notify.notify_waiters();
                         break;
                     }
                     Either::Left(Err(e)) => {

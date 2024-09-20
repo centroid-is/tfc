@@ -23,4 +23,7 @@ trait IpcRuler {
     fn register_signal(&self, name: &str, description: &str, type_id: u8) -> zbus::fdo::Result<()>;
 
     fn register_slot(&self, name: &str, description: &str, type_id: u8) -> zbus::fdo::Result<()>;
+
+    #[zbus(signal)]
+    fn connection_change(&self, slot_name: &str, signal_name: &str) -> fdo::Result<()>;
 }
