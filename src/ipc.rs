@@ -1,5 +1,6 @@
 use futures::future::Either;
 use futures::stream::StreamExt;
+use futures::SinkExt;
 use futures_channel::mpsc;
 use log::{log, Level};
 use quantities::mass::Mass;
@@ -67,6 +68,7 @@ pub struct Slot<T> {
     slot: Arc<RwLock<SlotImpl<T>>>,
     last_value: Arc<Mutex<Option<T>>>,
     value_changed: Arc<Notify>,
+    new_value_channel: Arc<Mutex<mpsc::Receiver<T>>>,
     cb: Option<Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>>,
     connect_notify: Arc<Notify>,
     filters: Arc<Mutex<Filters<T>>>,
@@ -97,11 +99,8 @@ where
         let log_key = base.log_key.clone();
         let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
         let value_changed = Arc::new(Notify::new());
-        let client = SlotInterface::new(
-            Arc::clone(&last_value),
-            Arc::clone(&value_changed),
-            &log_key,
-        );
+        let (new_value_sender, new_value_receiver) = mpsc::channel(10);
+        let client = SlotInterface::new(Arc::clone(&last_value), new_value_sender, &log_key);
         let dbus_path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
         let dbus_path_cp = dbus_path.clone();
         let bus_cp = bus.clone();
@@ -142,6 +141,7 @@ where
             slot: Arc::new(RwLock::new(SlotImpl::new(base))),
             last_value,
             value_changed,
+            new_value_channel: Arc::new(Mutex::new(new_value_receiver)),
             cb: None,
             connect_notify: Arc::new(Notify::new()),
             filters,
@@ -150,35 +150,74 @@ where
             log_key,
         }
     }
+
+    async fn process_value(
+        value: T,
+        shared_filters: Arc<Mutex<Filters<T>>>,
+        shared_last_value: Arc<Mutex<Option<T>>>,
+        shared_value_changed: Arc<Notify>,
+        shared_cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>,
+        shared_bus: zbus::Connection,
+        shared_dbus_path: &str,
+        log_key: &str,
+    ) {
+        let filtered_value = shared_filters.lock().await.process(value).await;
+        match filtered_value {
+            Ok(filtered) => {
+                *shared_last_value.lock().await = Some(filtered);
+                shared_value_changed.notify_waiters();
+                let value_guard = shared_last_value.lock().await;
+                let value_ref = value_guard.as_ref().unwrap();
+                shared_cb.lock().await(value_ref);
+                let iface: zbus::InterfaceRef<SlotInterface<T>> = shared_bus
+                    .object_server()
+                    .interface(shared_dbus_path)
+                    .await
+                    .unwrap();
+                let _ = SlotInterface::value(&iface.signal_context(), value_ref).await;
+            }
+            Err(err) => {
+                log!(target: log_key, Level::Trace,
+                    "Filtered out value reason: {}", err);
+            }
+        }
+    }
+
     pub fn recv(&mut self, callback: Box<dyn Fn(&T) + Send + Sync>) {
-        let wrapped_cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>> = Arc::new(Mutex::new(callback));
-        self.cb = Some(Arc::clone(&wrapped_cb));
+        let shared_cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>> = Arc::new(Mutex::new(callback));
+        self.cb = Some(Arc::clone(&shared_cb));
         let log_key = self.log_key.clone();
         let shared_slot = Arc::clone(&self.slot);
         let shared_last_value = Arc::clone(&self.last_value);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
         let shared_value_changed = Arc::clone(&self.value_changed);
         let shared_filters = Arc::clone(&self.filters);
+        let shared_new_value_channel = Arc::clone(&self.new_value_channel);
+        let shared_bus = self.bus.clone();
+        let shared_dbus_path = self.dbus_path.clone();
 
         tokio::spawn(async move {
             loop {
                 let slot_guard = shared_slot.read().await; // Create a binding for the read guard
+                let mut new_value_guard = shared_new_value_channel.lock().await;
                 tokio::select! {
                     result = slot_guard.recv() => {
                         match result {
                             Ok(value) => {
-                                let filtered_value = shared_filters.lock().await.process(value).await;
-                                if filtered_value.is_ok() {
-                                    *shared_last_value.lock().await = Some(filtered_value.unwrap());
-                                    shared_value_changed.notify_waiters();
-                                } else {
-                                    log!(target: &log_key, Level::Trace,
-                                        "Filtered out value reason: {}", filtered_value.err().unwrap());
-                                }
+                                Slot::process_value(
+                                    value,
+                                    Arc::clone(&shared_filters),
+                                    Arc::clone(&shared_last_value),
+                                    Arc::clone(&shared_value_changed),
+                                    Arc::clone(&shared_cb),
+                                    shared_bus.clone(),
+                                    shared_dbus_path.as_str(),
+                                    &log_key,
+                                ).await;
                             }
                             Err(e) => {
                                 log!(target: &log_key, Level::Info,
-                                        "Unsuccessful receive on slot, error: {}", e);
+                                    "Unsuccessful receive on slot, error: {}", e);
                             }
                         }
                     },
@@ -186,26 +225,28 @@ where
                         log!(target: &log_key, Level::Info,
                                 "Connecting to other signal, let's try receiving from it");
                     },
+                    result = new_value_guard.next() => {
+                        match result {
+                            Some(value) => {
+                                Slot::process_value(
+                                    value,
+                                    Arc::clone(&shared_filters),
+                                    Arc::clone(&shared_last_value),
+                                    Arc::clone(&shared_value_changed),
+                                    Arc::clone(&shared_cb),
+                                    shared_bus.clone(),
+                                    shared_dbus_path.as_str(),
+                                    &log_key,
+                                ).await;
+                            }
+                            None => {
+                                log!(target: &log_key, Level::Trace,
+                                    "New value channel ended");
+                                break;
+                            }
+                        }
+                    }
                 }
-            }
-        });
-
-        let shared_value_changed = Arc::clone(&self.value_changed);
-        let shared_last_value = Arc::clone(&self.last_value);
-        let shared_bus = self.bus.clone();
-        let shared_dbus_path = self.dbus_path.clone();
-        tokio::spawn(async move {
-            loop {
-                shared_value_changed.notified().await;
-                let value_guard = shared_last_value.lock().await;
-                let value_ref = value_guard.as_ref().unwrap();
-                wrapped_cb.lock().await(value_ref);
-                let iface: zbus::InterfaceRef<SlotInterface<T>> = shared_bus
-                    .object_server()
-                    .interface(shared_dbus_path.as_str())
-                    .await
-                    .unwrap();
-                let _ = SlotInterface::value(&iface.signal_context(), value_ref).await;
             }
         });
     }
@@ -247,15 +288,19 @@ mod detail {
 
 struct SlotInterface<T> {
     last_value: Arc<Mutex<Option<T>>>,
-    value_changed: Arc<Notify>,
+    new_value_channel: mpsc::Sender<T>,
     log_key: String,
 }
 
 impl<T: detail::SupportedTypes + zbus::zvariant::Type + Sync + Send + 'static> SlotInterface<T> {
-    pub fn new(last_value: Arc<Mutex<Option<T>>>, value_changed: Arc<Notify>, key: &str) -> Self {
+    pub fn new(
+        last_value: Arc<Mutex<Option<T>>>,
+        new_value_channel: mpsc::Sender<T>,
+        key: &str,
+    ) -> Self {
         Self {
             last_value,
-            value_changed,
+            new_value_channel,
             log_key: key.to_string(),
         }
     }
@@ -299,9 +344,11 @@ where
         }
     }
     async fn tinker(&mut self, value: T) -> Result<(), zbus::fdo::Error> {
-        let mut guard = self.last_value.lock().await;
-        *guard = Some(value);
-        self.value_changed.notify_waiters();
+        self.new_value_channel.send(value).await.map_err(|e| {
+            let err_msg = format!("Error sending new value: {}", e);
+            log!(target: &self.log_key, Level::Error, "{}", err_msg);
+            zbus::fdo::Error::Failed(err_msg)
+        })?;
         Ok(())
     }
     #[zbus(signal)]
