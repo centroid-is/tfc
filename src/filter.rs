@@ -7,7 +7,9 @@ use std::marker::{Send, Sync};
 use std::ops::Add;
 use std::ops::Not;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::confman::ConfMan;
 
@@ -50,6 +52,63 @@ struct FilterInvert {}
 impl<T: Send + Sync + 'static + PartialEq + Not<Output = T>> Filter<T> for FilterInvert {
     async fn filter(&self, value: T, _: Option<&T>) -> Result<T, Box<dyn Error + Send + Sync>> {
         Ok(!value)
+    }
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+struct FilterTimer {
+    time_on: Duration,
+    time_off: Duration,
+    #[serde(skip)]
+    state: Arc<Mutex<Option<CancellationToken>>>,
+}
+
+#[async_trait]
+impl Filter<bool> for FilterTimer {
+    async fn filter(
+        &self,
+        value: bool,
+        _: Option<&bool>,
+    ) -> Result<bool, Box<dyn Error + Send + Sync>> {
+        // If value is true, wait time_on; otherwise, wait time_off.
+        // If a new value arrives before the timer expires, cancel the current timer.
+
+        let mut state = self.state.lock().await;
+
+        if let Some(ref token) = *state {
+            token.cancel();
+        }
+
+        let new_token = CancellationToken::new();
+        *state = Some(new_token.clone());
+
+        let duration = if value { self.time_on } else { self.time_off };
+
+        // Release the lock before asynchronous operations.
+        drop(state);
+
+        if duration == Duration::from_secs(0) {
+            return Ok(value);
+        }
+
+        tokio::select! {
+            _ = tokio::time::sleep(duration) => {
+                // Check if the token has been cancelled.
+                if !new_token.is_cancelled() {
+                    return Ok(value);
+                } else {
+                    // The timer was cancelled before completion.
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Timer was cancelled by a new value",
+                    )));
+                }
+            }
+            _ = new_token.cancelled() => {
+                // The timer was cancelled.
+                return Err("Timer was cancelled by a new value".into());
+            }
+        }
     }
 }
 
@@ -127,7 +186,8 @@ impl_any_filter_decl!(
     vec![AnyFilterBool::NewState(FilterNewState {})],
     {
         NewState(FilterNewState),
-        Invert(FilterInvert)
+        Invert(FilterInvert),
+        Timer(FilterTimer)
         // Add other filters specific to bool
     }
 );
