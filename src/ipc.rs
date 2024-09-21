@@ -131,6 +131,7 @@ where
         let shared_connect_notify = Arc::clone(&connect_notify);
 
         // watch for connection changes for this slot
+        // TODO we should make a awaitable boolean flag, we need to have started this spawn strictly before the next one where we register the slot
         tokio::spawn(async move {
             let proxy = IpcRulerProxy::builder(&bus_cp)
                 .cache_properties(zbus::CacheProperties::No)
@@ -142,18 +143,14 @@ where
                 if res.is_ok() {
                     let args = res.unwrap().next().await.unwrap();
                     let slot_name = args.args().unwrap().slot_name().to_string();
+                    println!("slot_name: {}", slot_name);
                     if slot_name == name_cp {
                         shared_connect_notify.notify_waiters();
                         // let _ = shared_slot.write().await.disconnect().await;
                         let signal_name = args.args().unwrap().signal_name().to_string();
                         log!(target: &log_key_cp, Level::Trace,
                             "Connection change received for slot: {}, signal: {}", slot_name, signal_name);
-                        if signal_name.is_empty() {
-                            continue;
-                        }
-                        let res = shared_slot.write().await.async_connect(&signal_name).await;
-                        log!(target: &log_key_cp, Level::Trace,
-                            "Connect result: {}", res.is_ok());
+                        let res = shared_slot.write().await.connect(&signal_name);
                         if res.is_err() {
                             log!(target: &log_key_cp, Level::Error,
                                 "Failed to connect to signal: {}", res.err().unwrap());
@@ -409,7 +406,7 @@ where
 
 pub struct SlotImpl<T> {
     base: Base<T>,
-    sock: Arc<Mutex<SubSocket>>,
+    sock: Arc<Mutex<Option<SubSocket>>>,
     is_connected: Arc<Mutex<bool>>,
     connect_notify: Arc<Notify>,
 }
@@ -425,20 +422,27 @@ where
         // options.ZMQ_RECONNECT_IVL
         Self {
             base,
-            sock: Arc::new(Mutex::new(SubSocket::new())),
+            sock: Arc::new(Mutex::new(None)),
             is_connected: Arc::new(Mutex::new(false)),
             connect_notify: Arc::new(Notify::new()),
         }
     }
     async fn async_connect_(
         log_key: &str,
-        sock: Arc<Mutex<SubSocket>>,
+        sock: Arc<Mutex<Option<SubSocket>>>,
         signal_name: &str,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if signal_name.is_empty() {
+            return Ok(());
+        }
         let socket_path = endpoint(signal_name);
         log!(target: &log_key, Level::Trace, "Trying to connect to: {}", socket_path);
-        sock.lock().await.connect(socket_path.as_str()).await?;
-        sock.lock().await.subscribe("").await?;
+        let mut sock = sock.lock().await;
+        if sock.is_none() {
+            *sock = Some(SubSocket::new());
+        }
+        sock.as_mut().unwrap().connect(socket_path.as_str()).await?;
+        sock.as_mut().unwrap().subscribe("").await?;
         Ok(())
     }
     pub async fn async_connect(
@@ -462,7 +466,23 @@ where
         let shared_sock = Arc::clone(&self.sock);
         let signal_name_str = signal_name.to_string();
         let log_key_cp = self.base.log_key.clone();
+        let shared_is_connected = Arc::clone(&self.is_connected);
+        let shared_connect_notify = Arc::clone(&self.connect_notify);
+        // todo we need to cancel the below loop every time we call this function
+        // the loop will loop while we try to connect to some signal
         tokio::spawn(async move {
+            {
+                let mut socket = shared_sock.lock().await;
+                if let Some(sub_socket) = socket.take() {
+                    sub_socket.close().await;
+                }
+                *socket = None;
+                if signal_name_str.is_empty() {
+                    *shared_is_connected.lock().await = false;
+                    shared_connect_notify.notify_waiters();
+                    return;
+                }
+            }
             loop {
                 let connect_task = async {
                     Self::async_connect_(
@@ -482,6 +502,9 @@ where
                     Either::Left(Ok(_)) => {
                         log!(target: &log_key_cp, Level::Trace,
                             "Connect to: {:?} succesful", signal_name_str);
+                        // don't know why we need to notify here, if we are notifying in async_connect
+                        *shared_is_connected.lock().await = true;
+                        shared_connect_notify.notify_waiters();
                         break;
                     }
                     Either::Left(Err(e)) => {
@@ -500,7 +523,15 @@ where
             log!(target: self.base.log_key.as_str(), Level::Trace, "Still not connected will wait until then");
             self.connect_notify.notified().await;
         }
-        let buffer: ZmqMessage = self.sock.lock().await.recv().await?;
+        // todo tokio select, if we were to disconnect in the middle of recv
+        let mut sock = self.sock.lock().await;
+        if sock.is_none() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Socket is not connected",
+            )));
+        }
+        let buffer: ZmqMessage = sock.as_mut().unwrap().recv().await?;
         // todo remove copying
         let flattened_buffer: Vec<u8> = buffer.iter().flat_map(|b| b.to_vec()).collect();
         let mut cursor = io::Cursor::new(flattened_buffer);
