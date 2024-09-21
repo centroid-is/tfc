@@ -107,6 +107,7 @@ where
             + JsonSchema,
     {
         let name = base.full_name();
+        let name_cp = name.clone();
         let description = base.description.clone().unwrap_or(String::new());
         let dbus_path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
         let log_key = base.log_key.clone();
@@ -129,8 +130,44 @@ where
         let shared_slot: Arc<RwLock<SlotImpl<T>>> = Arc::clone(&slot);
         let shared_connect_notify = Arc::clone(&connect_notify);
 
+        // watch for connection changes for this slot
         tokio::spawn(async move {
-            // log if error
+            let proxy = IpcRulerProxy::builder(&bus_cp)
+                .cache_properties(zbus::CacheProperties::No)
+                .build()
+                .await
+                .unwrap();
+            loop {
+                let res = proxy.receive_connection_change().await;
+                if res.is_ok() {
+                    let args = res.unwrap().next().await.unwrap();
+                    let slot_name = args.args().unwrap().slot_name().to_string();
+                    if slot_name == name_cp {
+                        shared_connect_notify.notify_waiters();
+                        // let _ = shared_slot.write().await.disconnect().await;
+                        let signal_name = args.args().unwrap().signal_name().to_string();
+                        log!(target: &log_key_cp, Level::Trace,
+                            "Connection change received for slot: {}, signal: {}", slot_name, signal_name);
+                        if signal_name.is_empty() {
+                            continue;
+                        }
+                        let res = shared_slot.write().await.async_connect(&signal_name).await;
+                        log!(target: &log_key_cp, Level::Trace,
+                            "Connect result: {}", res.is_ok());
+                        if res.is_err() {
+                            log!(target: &log_key_cp, Level::Error,
+                                "Failed to connect to signal: {}", res.err().unwrap());
+                        }
+                    }
+                } else {
+                }
+            }
+        });
+
+        let bus_cp = bus.clone();
+        let log_key_cp = log_key.clone();
+        // register the dbus interface for this slot
+        tokio::spawn(async move {
             let _ = bus_cp
                 .object_server()
                 .at(dbus_path_cp, client)
@@ -151,31 +188,6 @@ where
                     log!(target: &log_key_cp, Level::Trace,
                     "Slot Registration failed: '{}', will try again in 1s", res.err().unwrap());
                     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                }
-            }
-            loop {
-                let res = proxy.receive_connection_change().await;
-                if res.is_ok() {
-                    let args = res.unwrap().next().await.unwrap();
-                    let slot_name = args.args().unwrap().slot_name().to_string();
-                    if slot_name == name {
-                        shared_connect_notify.notify_waiters();
-                        // let _ = shared_slot.write().await.disconnect().await;
-                        let signal_name = args.args().unwrap().signal_name().to_string();
-                        log!(target: &log_key_cp, Level::Trace,
-                            "Connection change received for slot: {}, signal: {}", slot_name, signal_name);
-                        if signal_name.is_empty() {
-                            continue;
-                        }
-                        let res = shared_slot.write().await.async_connect(&signal_name).await;
-                        log!(target: &log_key_cp, Level::Trace,
-                            "Connect result: {}", res.is_ok());
-                        if res.is_err() {
-                            log!(target: &log_key_cp, Level::Error,
-                                "Failed to connect to signal: {}", res.err().unwrap());
-                        }
-                    }
-                } else {
                 }
             }
         });
