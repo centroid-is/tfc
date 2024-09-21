@@ -9,6 +9,7 @@ use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc};
 use tokio::select;
 use tokio::sync::{Mutex, Notify, RwLock};
+use tokio_util::sync::CancellationToken;
 use zbus::{interface, zvariant::Type};
 use zeromq::{
     PubSocket, Socket, SocketEvent, SocketRecv, SocketSend, SubSocket, ZmqError, ZmqMessage,
@@ -409,6 +410,7 @@ pub struct SlotImpl<T> {
     sock: Arc<Mutex<Option<SubSocket>>>,
     is_connected: Arc<Mutex<bool>>,
     connect_notify: Arc<Notify>,
+    connect_cancel_token: CancellationToken,
 }
 
 impl<T> SlotImpl<T>
@@ -425,6 +427,7 @@ where
             sock: Arc::new(Mutex::new(None)),
             is_connected: Arc::new(Mutex::new(false)),
             connect_notify: Arc::new(Notify::new()),
+            connect_cancel_token: CancellationToken::new(),
         }
     }
     async fn async_connect_(
@@ -468,8 +471,11 @@ where
         let log_key_cp = self.base.log_key.clone();
         let shared_is_connected = Arc::clone(&self.is_connected);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
-        // todo we need to cancel the below loop every time we call this function
-        // the loop will loop while we try to connect to some signal
+
+        // cancel any previous connect
+        self.connect_cancel_token.cancel();
+        self.connect_cancel_token = CancellationToken::new();
+        let token = self.connect_cancel_token.child_token();
         tokio::spawn(async move {
             {
                 let mut socket = shared_sock.lock().await;
@@ -498,6 +504,11 @@ where
                 match select! {
                     result = connect_task => Either::Left(result),
                     _ = timeout_task => Either::Right(()),
+                    cancel_result = token.cancelled() => {
+                        log!(target: &log_key_cp, Level::Trace,
+                            "Connect to: {:?} cancelled, error: {:?}", signal_name_str, cancel_result);
+                        break;
+                    }
                 } {
                     Either::Left(Ok(_)) => {
                         log!(target: &log_key_cp, Level::Trace,
