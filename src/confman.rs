@@ -45,7 +45,7 @@ use crate::progbase;
 /// use serde::{Deserialize, Serialize};
 /// use schemars::JsonSchema;
 /// use zbus::connection;
-/// use tfc::progbase::{self, exe_name, proc_name};
+/// use tfc::progbase;
 /// use tfc::confman::ConfMan;
 /// #[derive(Deserialize, Serialize, JsonSchema, Default)]
 /// struct MyConfig {
@@ -54,10 +54,11 @@ use crate::progbase;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     progbase::init();
 ///     let formatted_name = format!(
 ///         "is.centroid.{}.{}",
-///         "exe_name", // please use the function exe_name()
-///         "proc_name" // please use the function proc_name()
+///         progbase::exe_name(),
+///         progbase::proc_name()
 ///     );
 ///     assert!(!formatted_name.contains(".."));
 ///     let _conn = connection::Builder::session()?.name(formatted_name)?.build().await?;
