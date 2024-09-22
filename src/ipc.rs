@@ -36,10 +36,10 @@ pub struct Base<T> {
 }
 
 impl<T: TypeName> Base<T> {
-    pub fn new(name: &str, description: Option<String>) -> Self {
+    pub fn new(name: &str, description: Option<&str>) -> Self {
         Self {
             name: String::from(name),
-            description,
+            description: description.map(|s| s.to_string()),
             value: Arc::new(RwLock::new(None)),
             log_key: Self::type_and_name(name),
         }
