@@ -23,7 +23,7 @@ pub trait Filter<T> {
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
-struct FilterNewState {}
+pub struct FilterNewState {}
 
 #[async_trait]
 impl<T: Send + Sync + 'static + PartialEq> Filter<T> for FilterNewState {
@@ -46,7 +46,7 @@ impl<T: Send + Sync + 'static + PartialEq> Filter<T> for FilterNewState {
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
-struct FilterInvert {}
+pub struct FilterInvert {}
 
 #[async_trait]
 impl<T: Send + Sync + 'static + PartialEq + Not<Output = T>> Filter<T> for FilterInvert {
@@ -56,7 +56,7 @@ impl<T: Send + Sync + 'static + PartialEq + Not<Output = T>> Filter<T> for Filte
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
-struct FilterTimer {
+pub struct FilterTimer {
     time_on: Duration,
     time_off: Duration,
     #[serde(skip)]
@@ -113,7 +113,7 @@ impl Filter<bool> for FilterTimer {
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
-struct FilterOffset<T> {
+pub struct FilterOffset<T> {
     offset: T,
 }
 

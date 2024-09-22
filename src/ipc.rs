@@ -557,6 +557,7 @@ pub struct Signal<T> {
     base: Base<T>,
     dbus_path: String,
     bus: zbus::Connection,
+    #[allow(dead_code)]
     log_key: String,
 }
 
@@ -896,7 +897,7 @@ impl ToLeBytesVec for bool {
     }
 }
 
-trait SerializeSize {
+pub trait SerializeSize {
     fn serialize_size(&self) -> usize;
 }
 impl<T: IsFundamental> SerializeSize for T {
@@ -919,7 +920,7 @@ where
             + if self.is_ok() { std::mem::size_of::<quantities::AmountT>() } else { std::mem::size_of::<E>() }
     }
 }
-trait Serialize {
+pub trait Serialize {
     fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()>;
 }
 impl<T> Serialize for T
@@ -1064,10 +1065,6 @@ impl<T: TypeIdentifier> Header<T> {
         }
     }
 
-    fn size() -> usize {
-        std::mem::size_of::<Version>() + std::mem::size_of::<u8>() + std::mem::size_of::<usize>()
-    }
-
     fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&[self.version as u8])?;
         writer.write_all(&[self.type_id as u8])?;
@@ -1129,6 +1126,7 @@ where
 
 #[derive(Debug)]
 struct DeserializePacket<V> {
+    #[allow(dead_code)]
     header: Header<V>,
     value: V,
 }

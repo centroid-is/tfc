@@ -38,17 +38,32 @@ fn main() {
     fs::write(
         &dest_path,
         format!(
-r#"
+            r#"
+#[allow(dead_code)]
 pub const GIT_REPO: &str = "{}";
+#[allow(dead_code)]
 pub const GIT_HASH: &str = "{}";
+#[allow(dead_code)]
 pub const GIT_AUTHOR: &str = "{}";
+#[allow(dead_code)]
 pub const GIT_BRANCH: &str = "{}";
+#[allow(dead_code)]
 pub const GIT_TAG: &str = "{}";
+#[allow(dead_code)]
 pub const GIT_COMMIT_DATE: &str = "{}";
+#[allow(dead_code)]
 pub const GIT_IS_DIRTY: &str = "{}";
+#[allow(dead_code)]
 pub const BUILD_DATE: &str = {};
 "#,
-            git_repo, git_hash, git_author, git_branch, git_tag, git_commit_date, git_is_dirty, build_date
+            git_repo,
+            git_hash,
+            git_author,
+            git_branch,
+            git_tag,
+            git_commit_date,
+            git_is_dirty,
+            build_date
         ),
     )
     .unwrap();

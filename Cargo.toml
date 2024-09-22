@@ -1,8 +1,17 @@
 [package]
-name = "framework-rs"
-version = "0.1.0"
+name = "tfc"
+version = "2024.9.1"
+authors = ["Centroid <centroid@centroid.is>"]
 edition = "2021"
 build = "build.rs"
+description = "The TFC is a distributed, real-time, event-driven framework for building scalable and resilient systems."
+readme = "README.md"
+repository = "https://github.com/centroid-is/tfc"
+homepage = "https://centroid.is"
+documentation = "https://tfc.centroid.is"
+keywords = ["framework", "distributed", "real-time", "event-driven", "scalable", "resilient"]
+categories = ["Development", "System", "Framework"]
+license = "MIT"
 
 [dependencies]
 clap = { version = "4.5.13", features = ["derive"] }

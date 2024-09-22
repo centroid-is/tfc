@@ -232,7 +232,7 @@ impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sy
 }
 // ------------------ trait ChangeTrait ------------------
 
-trait ChangeTrait<T> {
+pub trait ChangeTrait<T> {
     fn set_changed(&self) -> Result<(), Box<dyn Error>>;
     fn value_mut(&self) -> RwLockWriteGuard<'_, T>;
     fn key(&self) -> &str;
@@ -268,7 +268,7 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> ChangeTrai
 
 // ------------------ struct Change ------------------
 
-struct Change<'a, OwnerT, T>
+pub struct Change<'a, OwnerT, T>
 where
     OwnerT: ChangeTrait<T>,
 {
@@ -414,6 +414,7 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> FileStorag
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn make_change(&mut self) -> Change<Self, T> {
         Change::new(self)
     }
