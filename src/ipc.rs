@@ -144,7 +144,6 @@ where
                 if res.is_ok() {
                     let args = res.unwrap().next().await.unwrap();
                     let slot_name = args.args().unwrap().slot_name().to_string();
-                    println!("slot_name: {}", slot_name);
                     if slot_name == name_cp {
                         shared_connect_notify.notify_waiters();
                         // let _ = shared_slot.write().await.disconnect().await;
