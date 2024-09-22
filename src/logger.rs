@@ -86,6 +86,7 @@ mod tests {
     use crate::progbase;
     use log::{log, Level};
 
+    #[test]
     fn log_test() {
         progbase::init();
         let _ = init_combined_logger();

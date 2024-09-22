@@ -42,23 +42,32 @@ use crate::progbase;
 ///
 /// # Example Usage
 /// ```rust
+/// use serde::{Deserialize, Serialize};
+/// use schemars::JsonSchema;
+/// use zbus::connection;
+/// use tfc::progbase::{self, exe_name, proc_name};
+/// use tfc::confman::ConfMan;
 /// #[derive(Deserialize, Serialize, JsonSchema, Default)]
 /// struct MyConfig {
 ///    count: u64,
 /// }
-/// use zbus::Connection;
-///     let _conn = connection::Builder::session()?
-///    .name(format!(
-///        "is.centroid.{}.{}",
-///        progbase::exe_name(),
-///        progbase::proc_name()
-///    ))?
-///    .build()
-///    .await?;
-/// let config_manager = ConfMan::<MyConfig>::new(_conn.clone(), "my_config_key");
-/// // Use `config_manager` to manage your configuration
-/// ```
 ///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let formatted_name = format!(
+///         "is.centroid.{}.{}",
+///         "exe_name", // please use the function exe_name()
+///         "proc_name" // please use the function proc_name()
+///     );
+///     assert!(!formatted_name.contains(".."));
+///     let _conn = connection::Builder::session()?.name(formatted_name)?.build().await?;
+///     let config_manager = ConfMan::<MyConfig>::new(_conn.clone(), "my_config_key");
+///     // Use `config_manager` to manage your configuration
+///     // std::future::pending::<()>().await;
+///     Ok(())
+/// }
+///
+/// ```
 /// The `ConfMan` struct and its D-Bus interface provide a convenient way to
 /// manage configuration files that can be accessed and modified both programmatically
 /// and over D-Bus.
