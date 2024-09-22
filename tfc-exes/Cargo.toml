@@ -5,5 +5,9 @@ edition = "2021"
 
 [dependencies]
 derive_more = { version = "1.0.0", features = ["display"] }
+serde = "1.0.210"
 smlang = { version = "0.8.0", features = ["graphviz"] }
-tfc = { git = "https://github.com/centroid-is/tfc.git", tag = "2024.9.1" }
+# tfc = { git = "https://github.com/centroid-is/tfc.git", tag = "2024.9.1" }
+tfc = { path = "../framework-rs"}
+tokio = "1.40.0"
+zbus = "4.4.0"
