@@ -1,8 +1,11 @@
 use derive_more::Display;
+use log::{info, trace};
 use serde::{Deserialize, Serialize};
 use smlang::statemachine;
 use std::fmt::Debug;
+use std::sync::{Arc, Mutex};
 use tfc::ipc::{Base, Signal, Slot};
+use tfc::logger;
 use tfc::progbase;
 use tokio;
 use zbus::interface;
@@ -85,21 +88,9 @@ statemachine! {
         Cleaning + SetStopped / transition_to_stopped = Stopped,
 
         // Transitions to Emergency
-        Stopped + SetEmergency / transition_to_emergency = Emergency,
-        Stopping + SetEmergency / transition_to_emergency = Emergency,
-        Starting + SetEmergency / transition_to_emergency = Emergency,
-        Running + SetEmergency / transition_to_emergency = Emergency,
-        Cleaning + SetEmergency / transition_to_emergency = Emergency,
-        Fault + SetEmergency / transition_to_emergency = Emergency,
-        Maintenance + SetEmergency / transition_to_emergency = Emergency,
+        _ + SetEmergency / transition_to_emergency = Emergency,
 
-        Stopped + EmergencyOn / transition_to_emergency = Emergency,
-        Stopping + EmergencyOn / transition_to_emergency = Emergency,
-        Starting + EmergencyOn / transition_to_emergency = Emergency,
-        Running + EmergencyOn / transition_to_emergency = Emergency,
-        Cleaning + EmergencyOn / transition_to_emergency = Emergency,
-        Fault + EmergencyOn / transition_to_emergency = Emergency,
-        Maintenance + EmergencyOn / transition_to_emergency = Emergency,
+        _ + EmergencyOn / transition_to_emergency = Emergency,
 
         Emergency + EmergencyOff [!is_fault] / transition_to_stopped = Stopped,
         Emergency + EmergencyOff [is_fault] / transition_to_fault = Fault,
@@ -120,6 +111,7 @@ statemachine! {
 
 // Define the owner struct with required methods
 pub struct Context {
+    log_key: String,
     stopped: Signal<bool>,
     starting: Signal<bool>,
     running: Signal<bool>,
@@ -137,10 +129,12 @@ pub struct Context {
     maintenance_button: Slot<bool>,
     emergency_in: Slot<bool>,
     fault_in: Slot<bool>,
+
+    sm: Option<OperationsStateMachine<Arc<Mutex<Self>>>>,
 }
 
 impl Context {
-    pub fn new(bus: zbus::Connection) -> Self {
+    pub fn new(bus: zbus::Connection) -> Arc<Mutex<Self>> {
         let bus_cp = bus.clone();
         let path = "/is/centroid/OperationMode";
         let client = OperationsClient::new("OperationMode");
@@ -153,7 +147,8 @@ impl Context {
                 .await
                 .expect(&format!("Error registering object: {}", log_key));
         });
-        Self {
+        let ctx = Arc::new(Mutex::new(Self {
+            log_key: log_key.to_string(),
             stopped: Signal::new(
                 bus.clone(),
                 Base::new("stopped", Some("System state stopped")),
@@ -217,21 +212,188 @@ impl Context {
             emergency_in: Slot::new(
                 bus.clone(),
                 Base::new(
-                    "emergency_in",
+                    "emergency",
                     Some("Emergency input signal, true when emergency is active"),
                 ),
             ),
             fault_in: Slot::new(
                 bus.clone(),
                 Base::new(
-                    "fault_in",
+                    "fault",
                     Some("Fault input signal, true when fault is active"),
                 ),
             ),
+            sm: None,
+        }));
+
+        let shared_ctx = Arc::clone(&ctx);
+        ctx.lock()
+            .unwrap()
+            .starting_finished
+            .recv(Box::new(move |val: &bool| {
+                shared_ctx.lock().unwrap().on_starting_finished(val);
+            }));
+        let shared_ctx = Arc::clone(&ctx);
+        ctx.lock()
+            .unwrap()
+            .stopping_finished
+            .recv(Box::new(move |val: &bool| {
+                shared_ctx.lock().unwrap().on_stopping_finished(val);
+            }));
+        let shared_ctx = Arc::clone(&ctx);
+        ctx.lock()
+            .unwrap()
+            .run_button
+            .recv(Box::new(move |val: &bool| {
+                shared_ctx.lock().unwrap().on_run_button(val);
+            }));
+        let shared_ctx = Arc::clone(&ctx);
+        ctx.lock()
+            .unwrap()
+            .cleaning_button
+            .recv(Box::new(move |val: &bool| {
+                shared_ctx.lock().unwrap().on_cleaning_button(val);
+            }));
+        let shared_ctx = Arc::clone(&ctx);
+        ctx.lock()
+            .unwrap()
+            .maintenance_button
+            .recv(Box::new(move |val: &bool| {
+                shared_ctx.lock().unwrap().on_maintenance_button(val);
+            }));
+        let shared_ctx = Arc::clone(&ctx);
+        ctx.lock()
+            .unwrap()
+            .emergency_in
+            .recv(Box::new(move |val: &bool| {
+                shared_ctx.lock().unwrap().on_emergency_in(val);
+            }));
+        let shared_ctx = Arc::clone(&ctx);
+        ctx.lock()
+            .unwrap()
+            .fault_in
+            .recv(Box::new(move |val: &bool| {
+                shared_ctx.lock().unwrap().on_fault_in(val);
+            }));
+
+        ctx
+    }
+
+    fn set_sm(&mut self, sm: OperationsStateMachine<Arc<Mutex<Self>>>) {
+        self.sm = Some(sm);
+    }
+
+    fn on_starting_finished(&mut self, val: &bool) {
+        trace!(target: &self.log_key, "Starting finished: {}", val);
+        if !val {
+            return;
+        }
+
+        let _ = self
+            .sm
+            .as_mut()
+            .unwrap()
+            .process_event(OperationsEvents::StartingFinished)
+            .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
+    }
+    fn on_stopping_finished(&mut self, val: &bool) {
+        trace!(target: &self.log_key, "Stopping finished: {}", val);
+        if !val {
+            return;
+        }
+
+        let _ = self
+            .sm
+            .as_mut()
+            .unwrap()
+            .process_event(OperationsEvents::StoppingFinished)
+            .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
+    }
+    fn on_run_button(&mut self, val: &bool) {
+        trace!(target: &self.log_key, "Run button pressed: {}", val);
+        if !val {
+            return;
+        }
+
+        let _ = self
+            .sm
+            .as_mut()
+            .unwrap()
+            .process_event(OperationsEvents::RunButton)
+            .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
+    }
+    fn on_cleaning_button(&mut self, val: &bool) {
+        trace!(target: &self.log_key, "Cleaning button pressed: {}", val);
+        if !val {
+            return;
+        }
+
+        let _ = self
+            .sm
+            .as_mut()
+            .unwrap()
+            .process_event(OperationsEvents::CleaningButton)
+            .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
+    }
+    fn on_maintenance_button(&mut self, val: &bool) {
+        trace!(target: &self.log_key, "Maintenance button pressed: {}", val);
+        if !val {
+            return;
+        }
+
+        let _ = self
+            .sm
+            .as_mut()
+            .unwrap()
+            .process_event(OperationsEvents::MaintenanceButton)
+            .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
+    }
+    fn on_emergency_in(&mut self, val: &bool) {
+        // TODO use reentrant lock
+        // https://docs.rs/parking_lot/latest/parking_lot/type.ReentrantMutex.html
+
+        trace!(target: &self.log_key, "Emergency input signal: {}", val);
+        if *val {
+            println!("Emergency on");
+            let _ = self
+                .sm
+                .as_mut()
+                .unwrap()
+                .process_event(OperationsEvents::EmergencyOn)
+                .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
+            println!("Emergency on done");
+        } else {
+            println!("Emergency off");
+            let _ = self
+                .sm
+                .as_mut()
+                .unwrap()
+                .process_event(OperationsEvents::EmergencyOff)
+                .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
+            println!("Emergency off done");
+        }
+    }
+    fn on_fault_in(&mut self, val: &bool) {
+        trace!(target: &self.log_key, "Fault input signal: {}", val);
+        if *val {
+            let _ = self
+                .sm
+                .as_mut()
+                .unwrap()
+                .process_event(OperationsEvents::FaultOn)
+                .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
+        } else {
+            let _ = self
+                .sm
+                .as_mut()
+                .unwrap()
+                .process_event(OperationsEvents::FaultOff)
+                .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
         }
     }
 }
-impl OperationsStateMachineContext for Context {
+
+impl OperationsStateMachineContext for Arc<Mutex<Context>> {
     fn on_entry_stopped(&mut self) {
         println!("Entering Stopped state");
     }
@@ -319,11 +481,19 @@ impl OperationsStateMachineContext for Context {
         let to_state = OperationsStates::Maintenance;
         Ok(())
     }
+
+    // fn log_process_event(&self, current_state: &OperationsStates, event: &OperationsEvents) {
+    //     trace!(target: &self.lock().unwrap().log_key,
+    //         "[StateMachineLogger]\t[{:?}] Processing event {:?}",
+    //         current_state, event
+    //     );
+    // }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     progbase::init();
+    logger::init_combined_logger()?;
     let formatted_name = format!(
         "is.centroid.{}.{}",
         progbase::exe_name(),
@@ -333,25 +503,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .name(formatted_name)?
         .build()
         .await?;
-    let ctx: Context = Context::new(bus.clone());
-    let mut sm = OperationsStateMachine::new(ctx);
 
-    println!("Starting state machine");
-    println!("Current state: {:?}", sm.state());
-    // Start the state machine by processing the initial event
-    sm.process_event(OperationsEvents::SetStopped).unwrap();
-    println!("Current state: {:?}", sm.state());
-    // Process events as needed
-    sm.process_event(OperationsEvents::RunButton).unwrap();
-    sm.process_event(OperationsEvents::StartingFinished)
-        .unwrap();
-    sm.process_event(OperationsEvents::SetEmergency).unwrap();
-    sm.process_event(OperationsEvents::EmergencyOff).unwrap();
-    sm.process_event(OperationsEvents::FaultOn).unwrap();
-    sm.process_event(OperationsEvents::FaultOff).unwrap();
-    sm.process_event(OperationsEvents::MaintenanceButton)
-        .unwrap();
-    sm.process_event(OperationsEvents::SetStopped).unwrap();
+    let ctx = Context::new(bus.clone());
+    let sm = OperationsStateMachine::new(Arc::clone(&ctx));
+    ctx.lock().unwrap().set_sm(sm);
+
     std::future::pending::<()>().await;
     Ok(())
 }
