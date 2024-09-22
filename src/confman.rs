@@ -61,7 +61,7 @@ use crate::progbase;
 ///         progbase::proc_name()
 ///     );
 ///     assert!(!formatted_name.contains(".."));
-///     let _conn = connection::Builder::session()?.name(formatted_name)?.build().await?;
+///     let _conn = connection::Builder::system()?.name(formatted_name)?.build().await?;
 ///     let config_manager = ConfMan::<MyConfig>::new(_conn.clone(), "my_config_key");
 ///     // Use `config_manager` to manage your configuration
 ///     // std::future::pending::<()>().await;
