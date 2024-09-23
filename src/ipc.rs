@@ -553,8 +553,9 @@ where
 
 pub struct Signal<T> {
     signal: Arc<Mutex<SignalImpl<T>>>,
-    base: Base<T>,
-    dbus_path: String,
+    full_name: String,
+    base: Arc<Mutex<Base<T>>>,
+    dbus_path: Arc<Mutex<String>>,
     bus: zbus::Connection,
     #[allow(dead_code)]
     log_key: String,
@@ -622,27 +623,57 @@ where
         });
         Self {
             signal,
-            base,
-            dbus_path,
+            full_name: base.full_name(),
+            base: Arc::new(Mutex::new(base)),
+            dbus_path: Arc::new(Mutex::new(dbus_path)),
             bus,
             log_key,
         }
     }
-    pub async fn send(&mut self, value: T) -> Result<(), Box<dyn Error>> {
-        self.signal.lock().await.send(value).await?;
-        let value_guard = self.base.value.read().await;
+
+    async fn async_send_impl(
+        signal: Arc<Mutex<SignalImpl<T>>>,
+        base: Arc<Mutex<Base<T>>>,
+        bus: zbus::Connection,
+        dbus_path: Arc<Mutex<String>>,
+        value: T,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        signal.lock().await.send(value).await?;
+        let base = base.lock().await;
+        let value_guard = base.value.read().await;
         let value_ref = value_guard.as_ref().unwrap();
-        let iface: zbus::InterfaceRef<SignalInterface<T>> = self
-            .bus
+        let iface: zbus::InterfaceRef<SignalInterface<T>> = bus
             .object_server()
-            .interface(self.dbus_path.as_str())
+            .interface(dbus_path.lock().await.as_str())
             .await
             .unwrap();
         SignalInterface::value(&iface.signal_context(), value_ref).await?;
         Ok(())
     }
-    pub fn full_name(&self) -> String {
-        self.base.full_name()
+
+    pub fn send(&mut self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let shared_signal = Arc::clone(&self.signal);
+        let shared_base = Arc::clone(&self.base);
+        let dbus_path = Arc::clone(&self.dbus_path);
+        let bus = self.bus.clone();
+        tokio::spawn(async move {
+            Self::async_send_impl(shared_signal, shared_base, bus, dbus_path, value).await
+        });
+        Ok(())
+    }
+
+    pub async fn async_send(&mut self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
+        Self::async_send_impl(
+            Arc::clone(&self.signal),
+            Arc::clone(&self.base),
+            self.bus.clone(),
+            self.dbus_path.clone(),
+            value,
+        )
+        .await
+    }
+    pub fn full_name(&self) -> &str {
+        &self.full_name
     }
 }
 
@@ -781,7 +812,7 @@ where
         }
         Ok(())
     }
-    pub async fn send(&mut self, value: T) -> Result<(), Box<dyn Error>> {
+    pub async fn send(&mut self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut buffer = Vec::new();
         {
             let packet = SerializePacket::new(&value);
