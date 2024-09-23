@@ -3,6 +3,7 @@ use log::{info, trace};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smlang::statemachine;
+use std::cell::RefCell;
 use std::error::Error;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
@@ -72,7 +73,7 @@ impl OperationsClient {
 // Define the state machine transitions and actions
 statemachine! {
     name: Operations,
-    derive_states: [Debug, Display],
+    derive_states: [Debug, Display, Clone],
     derive_events: [Debug, Display],
     transitions: {
         *Init + SetStopped / transition_to_stopped = Stopped,
@@ -145,6 +146,8 @@ pub struct OperationsImpl {
     fault_in: Slot<bool>,
     sm: Arc<Mutex<Option<OperationsStateMachine<Context>>>>,
     confman: confman::ConfMan<Storage>,
+    dbus_path: String,
+    bus: zbus::Connection,
 }
 
 impl OperationsImpl {
@@ -249,6 +252,8 @@ impl OperationsImpl {
                 startup_time: Some(Duration::from_secs(0)),
                 stopping_time: Some(Duration::from_secs(0)),
             }),
+            dbus_path: path.to_string(),
+            bus,
         }));
 
         let mut ops_impl = ctx.lock().unwrap();
@@ -257,6 +262,7 @@ impl OperationsImpl {
         let context = Context {
             log_key: "StateMachine".to_string(),
             owner: ops_impl_ptr,
+            last_state: RefCell::new(OperationsStates::Init),
         };
 
         ctx.lock()
@@ -528,11 +534,33 @@ impl OperationsImpl {
     fn is_fault(&self) -> Result<bool, Box<dyn Error + Send + Sync>> {
         self.fault_in.value()
     }
+
+    fn transition(&mut self, from: &OperationsStates, to: &OperationsStates) -> Result<(), ()> {
+        trace!(target: &self.log_key, "Transitioning from {:?} to {:?}", from, to);
+
+        // self.mode.send(*to as u64);
+
+        let shared_bus = self.bus.clone();
+        let shared_dbus_path = self.dbus_path.clone();
+        let new_mode = to.to_string();
+        let old_mode = from.to_string();
+
+        tokio::spawn(async move {
+            let iface: zbus::InterfaceRef<OperationsClient> = shared_bus
+                .object_server()
+                .interface(shared_dbus_path)
+                .await
+                .unwrap();
+            let _ = OperationsClient::update(&iface.signal_context(), &new_mode, &old_mode).await;
+        });
+        Ok(())
+    }
 }
 
 pub struct Context {
     owner: *mut OperationsImpl,
     log_key: String,
+    last_state: RefCell<OperationsStates>,
 }
 // todo: make this safe
 unsafe impl Send for Context {}
@@ -681,6 +709,10 @@ impl OperationsStateMachineContext for Context {
             "[StateMachineLogger]\t[{:?}] Processing event {:?}",
             current_state, event
         );
+        self.with_owner(|ops_impl| {
+            let _ = ops_impl.transition(&self.last_state.borrow(), current_state);
+        });
+        self.last_state.replace(current_state.clone());
     }
 }
 
