@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::cmp::PartialEq;
@@ -8,7 +9,6 @@ use std::ops::Add;
 use std::ops::Not;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::confman::ConfMan;
@@ -73,7 +73,7 @@ impl Filter<bool> for FilterTimer {
         // If value is true, wait time_on; otherwise, wait time_off.
         // If a new value arrives before the timer expires, cancel the current timer.
 
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock();
 
         if let Some(ref token) = *state {
             token.cancel();
@@ -242,7 +242,7 @@ where
         }
     }
     pub async fn process(&self, new_value: T) -> Result<T, Box<dyn Error + Send + Sync>> {
-        let old_value = self.last_value.lock().await;
+        let old_value = self.last_value.lock();
         let old_value = old_value.as_ref();
         let mut result: Result<T, Box<dyn Error + Send + Sync>> = Ok(new_value);
         for filter in self.filters.read().iter() {

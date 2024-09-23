@@ -3,12 +3,13 @@ use futures::stream::StreamExt;
 use futures::SinkExt;
 use futures_channel::mpsc;
 use log::{log, Level};
+use parking_lot::Mutex;
 use quantities::mass::Mass;
 use schemars::JsonSchema;
 use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc};
 use tokio::select;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 use zbus::{interface, zvariant::Type};
 use zeromq::{
@@ -211,13 +212,13 @@ where
         shared_dbus_path: &str,
         log_key: &str,
     ) {
-        let filtered_value = shared_filters.lock().await.process(value).await;
+        let filtered_value = shared_filters.lock().process(value).await;
         match filtered_value {
             Ok(filtered) => {
-                *shared_last_value.lock().await = Some(filtered);
-                let value_guard = shared_last_value.lock().await;
+                *shared_last_value.lock() = Some(filtered);
+                let value_guard = shared_last_value.lock();
                 let value_ref = value_guard.as_ref().unwrap();
-                shared_cb.lock().await(value_ref);
+                shared_cb.lock()(value_ref);
                 let iface: zbus::InterfaceRef<SlotInterface<T>> = shared_bus
                     .object_server()
                     .interface(shared_dbus_path)
@@ -229,6 +230,17 @@ where
                 log!(target: log_key, Level::Trace,
                     "Filtered out value reason: {}", err);
             }
+        }
+    }
+
+    pub fn value(&self) -> Result<T, Box<dyn Error + Send + Sync>> {
+        let guard = self.last_value.lock();
+        match *guard {
+            Some(ref value) => Ok(value.clone()),
+            None => Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "No value set",
+            ))),
         }
     }
 
@@ -250,7 +262,7 @@ where
         tokio::spawn(async move {
             loop {
                 let slot_guard = shared_slot.read().await; // Create a binding for the read guard
-                let mut new_value_guard = shared_new_value_channel.lock().await;
+                let mut new_value_guard = shared_new_value_channel.lock();
                 tokio::select! {
                     result = slot_guard.recv() => {
                         match result {
@@ -370,7 +382,7 @@ where
 {
     #[zbus(property, name = "Value")]
     async fn value_prop(&self) -> Result<zbus::zvariant::Value<'static>, zbus::fdo::Error> {
-        let guard = self.last_value.lock().await;
+        let guard = self.last_value.lock();
 
         match *guard {
             Some(ref value) => Ok(value.to_value()),
@@ -386,7 +398,7 @@ where
         })
     }
     async fn last_value(&self) -> Result<T, zbus::fdo::Error> {
-        let guard = self.last_value.lock().await;
+        let guard = self.last_value.lock();
         match *guard {
             Some(ref value) => Ok(value.clone()),
             None => Err(zbus::fdo::Error::Failed("No value set".into())),
@@ -439,7 +451,7 @@ where
         }
         let socket_path = endpoint(signal_name);
         log!(target: &log_key, Level::Trace, "Trying to connect to: {}", socket_path);
-        let mut sock = sock.lock().await;
+        let mut sock = sock.lock();
         if sock.is_none() {
             *sock = Some(SubSocket::new());
         }
@@ -459,7 +471,7 @@ where
         )
         .await;
         if res.is_ok() {
-            *self.is_connected.lock().await = true;
+            *self.is_connected.lock() = true;
             self.connect_notify.notify_waiters();
         }
         res
@@ -477,13 +489,13 @@ where
         let token = self.connect_cancel_token.child_token();
         tokio::spawn(async move {
             {
-                let mut socket = shared_sock.lock().await;
+                let mut socket = shared_sock.lock();
                 if let Some(sub_socket) = socket.take() {
                     sub_socket.close().await;
                 }
                 *socket = None;
                 if signal_name_str.is_empty() {
-                    *shared_is_connected.lock().await = false;
+                    *shared_is_connected.lock() = false;
                     shared_connect_notify.notify_waiters();
                     return;
                 }
@@ -513,7 +525,7 @@ where
                         log!(target: &log_key_cp, Level::Trace,
                             "Connect to: {:?} succesful", signal_name_str);
                         // don't know why we need to notify here, if we are notifying in async_connect
-                        *shared_is_connected.lock().await = true;
+                        *shared_is_connected.lock() = true;
                         shared_connect_notify.notify_waiters();
                         break;
                     }
@@ -529,12 +541,12 @@ where
         Ok(())
     }
     pub async fn recv(&self) -> Result<T, Box<dyn Error + Send + Sync>> {
-        if !*self.is_connected.lock().await {
+        if !*self.is_connected.lock() {
             log!(target: self.base.log_key.as_str(), Level::Trace, "Still not connected will wait until then");
             self.connect_notify.notified().await;
         }
         // todo tokio select, if we were to disconnect in the middle of recv
-        let mut sock = self.sock.lock().await;
+        let mut sock = self.sock.lock();
         if sock.is_none() {
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -597,7 +609,7 @@ where
         let name = base.full_name();
         let description = base.description.clone().unwrap_or(String::new());
         tokio::spawn(async move {
-            let _ = signal_cp.lock().await.init().await;
+            let _ = signal_cp.lock().init().await;
             let _ = bus_cp
                 .object_server()
                 .at(dbus_path_cp, client)
@@ -638,13 +650,13 @@ where
         dbus_path: Arc<Mutex<String>>,
         value: T,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        signal.lock().await.send(value).await?;
-        let base = base.lock().await;
+        signal.lock().send(value).await?;
+        let base = base.lock();
         let value_guard = base.value.read().await;
         let value_ref = value_guard.as_ref().unwrap();
         let iface: zbus::InterfaceRef<SignalInterface<T>> = bus
             .object_server()
-            .interface(dbus_path.lock().await.as_str())
+            .interface(dbus_path.lock().as_str())
             .await
             .unwrap();
         SignalInterface::value(&iface.signal_context(), value_ref).await?;
@@ -765,12 +777,8 @@ where
         if path.exists() {
             std::fs::remove_file(path)?;
         }
-        self.sock
-            .lock()
-            .await
-            .bind(self.base.endpoint().as_str())
-            .await?;
-        self.monitor = Some(self.sock.lock().await.monitor());
+        self.sock.lock().bind(self.base.endpoint().as_str()).await?;
+        self.monitor = Some(self.sock.lock().monitor());
 
         let shared_value = Arc::clone(&self.base.value);
         let shared_sock = Arc::clone(&self.sock);
@@ -783,7 +791,7 @@ where
                             log!(target: &log_key, Level::Trace,
                                 "Accepted event, last value: {:?}", shared_value.read().await
                             );
-                            let locked_sock = shared_sock.lock();
+                            let mut locked_sock = shared_sock.lock();
                             let mut buffer = Vec::new();
                             {
                                 let value = shared_value.read().await;
@@ -795,7 +803,7 @@ where
                             }
                             // TODO use ZMQ_EVENT_HANDSHAKE_SUCCEEDED and throw this sleep out
                             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                            locked_sock.await.send(ZmqMessage::from(buffer)).await?;
+                            locked_sock.send(ZmqMessage::from(buffer)).await?;
                         }
                         other_event => {
                             log!(target: &log_key, Level::Info,
@@ -819,11 +827,7 @@ where
             packet.serialize(&mut buffer).expect("Serialization failed");
         }
         *self.base.value.write().await = Some(value);
-        self.sock
-            .lock()
-            .await
-            .send(ZmqMessage::from(buffer))
-            .await?;
+        self.sock.lock().send(ZmqMessage::from(buffer)).await?;
         Ok(())
     }
 
