@@ -1,12 +1,13 @@
 use derive_more::Display;
 use log::{info, trace};
-use parking_lot::ReentrantMutex;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smlang::statemachine;
-use std::cell::RefCell;
+use std::error::Error;
 use std::fmt::Debug;
-use std::ops::Deref;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tfc::confman;
 use tfc::ipc::{Base, Signal, Slot};
 use tfc::logger;
 use tfc::progbase;
@@ -112,9 +113,14 @@ statemachine! {
     },
 }
 
-pub struct Context {
-    owner: *mut OperationsImpl,
-    log_key: String,
+#[derive(Default, Serialize, Deserialize, JsonSchema)]
+struct Storage {
+    #[schemars(description = "Delay to run initial sequences to get the equipment ready.")]
+    startup_time: Option<Duration>,
+    #[schemars(
+        description = "Delay to run shutdown sequences to get the equipment ready for being stopped."
+    )]
+    stopping_time: Option<Duration>,
 }
 
 pub struct OperationsImpl {
@@ -129,6 +135,7 @@ pub struct OperationsImpl {
     maintenance_out: Signal<bool>,
     mode: Signal<u64>,
     mode_str: Signal<String>,
+    stop_reason: Signal<String>,
     starting_finished: Slot<bool>,
     stopping_finished: Slot<bool>,
     run_button: Slot<bool>,
@@ -136,7 +143,8 @@ pub struct OperationsImpl {
     maintenance_button: Slot<bool>,
     emergency_in: Slot<bool>,
     fault_in: Slot<bool>,
-    sm: Option<OperationsStateMachine<Context>>,
+    sm: Arc<Mutex<Option<OperationsStateMachine<Context>>>>,
+    confman: confman::ConfMan<Storage>,
 }
 
 impl OperationsImpl {
@@ -189,6 +197,13 @@ impl OperationsImpl {
                 bus.clone(),
                 Base::new("mode_str", Some("Current system mode as string")),
             ),
+            stop_reason: Signal::new(
+                bus.clone(),
+                Base::new(
+                    "stop_reason",
+                    Some("Reason for system going into stopped state"),
+                ),
+            ),
             starting_finished: Slot::new(
                 bus.clone(),
                 Base::new(
@@ -229,7 +244,11 @@ impl OperationsImpl {
                     Some("Fault input signal, true when fault is active"),
                 ),
             ),
-            sm: None,
+            sm: Arc::new(Mutex::new(None)),
+            confman: confman::ConfMan::new(bus.clone(), "Operations").with_default(Storage {
+                startup_time: Some(Duration::from_secs(0)),
+                stopping_time: Some(Duration::from_secs(0)),
+            }),
         }));
 
         let mut ops_impl = ctx.lock().unwrap();
@@ -240,7 +259,12 @@ impl OperationsImpl {
             owner: ops_impl_ptr,
         };
 
-        ctx.lock().unwrap().sm = Some(OperationsStateMachine::new(context));
+        ctx.lock()
+            .unwrap()
+            .sm
+            .lock()
+            .unwrap()
+            .replace(OperationsStateMachine::new(context));
 
         let shared_ctx = Arc::clone(&ctx);
         ctx.lock()
@@ -292,12 +316,19 @@ impl OperationsImpl {
                 shared_ctx.lock().unwrap().on_fault_in(val);
             }));
 
+        let _ = ctx.lock().unwrap().starting.send(false);
+        let _ = ctx.lock().unwrap().stopping.send(false);
+        let _ = ctx.lock().unwrap().cleaning.send(false);
+        let _ = ctx.lock().unwrap().emergency_out.send(false);
+        let _ = ctx.lock().unwrap().fault_out.send(false);
+        let _ = ctx.lock().unwrap().maintenance_out.send(false);
+        let _ = ctx.lock().unwrap().running.send(false);
+        let _ = ctx.lock().unwrap().stopped.send(false);
+        let _ = ctx.lock().unwrap().mode.send(OperationMode::Unknown as u64);
+        let _ = ctx.lock().unwrap().mode_str.send("unknown".to_string());
+        let _ = ctx.lock().unwrap().stop_reason.send("".to_string());
         ctx
     }
-
-    // fn set_sm(&mut self, sm: OperationsStateMachine<Arc<ReentrantMutex<RefCell<Self>>>>) {
-    //     self.sm = Some(sm);
-    // }
 
     fn on_starting_finished(&mut self, val: &bool) {
         trace!(target: &self.log_key, "Starting finished: {}", val);
@@ -307,6 +338,8 @@ impl OperationsImpl {
 
         let _ = self
             .sm
+            .lock()
+            .unwrap()
             .as_mut()
             .unwrap()
             .process_event(OperationsEvents::StartingFinished)
@@ -320,6 +353,8 @@ impl OperationsImpl {
 
         let _ = self
             .sm
+            .lock()
+            .unwrap()
             .as_mut()
             .unwrap()
             .process_event(OperationsEvents::StoppingFinished)
@@ -333,6 +368,8 @@ impl OperationsImpl {
 
         let _ = self
             .sm
+            .lock()
+            .unwrap()
             .as_mut()
             .unwrap()
             .process_event(OperationsEvents::RunButton)
@@ -346,6 +383,8 @@ impl OperationsImpl {
 
         let _ = self
             .sm
+            .lock()
+            .unwrap()
             .as_mut()
             .unwrap()
             .process_event(OperationsEvents::CleaningButton)
@@ -359,6 +398,8 @@ impl OperationsImpl {
 
         let _ = self
             .sm
+            .lock()
+            .unwrap()
             .as_mut()
             .unwrap()
             .process_event(OperationsEvents::MaintenanceButton)
@@ -367,97 +408,132 @@ impl OperationsImpl {
     fn on_emergency_in(&mut self, val: &bool) {
         trace!(target: &self.log_key, "Emergency input signal: {}", val);
         if *val {
-            println!("Emergency on");
             let _ = self
                 .sm
+                .lock()
+                .unwrap()
                 .as_mut()
                 .unwrap()
                 .process_event(OperationsEvents::EmergencyOn)
                 .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
-            println!("Emergency on done");
         } else {
-            println!("Emergency off");
             let _ = self
                 .sm
+                .lock()
+                .unwrap()
                 .as_mut()
                 .unwrap()
                 .process_event(OperationsEvents::EmergencyOff)
                 .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
-            println!("Emergency off done");
         }
     }
     fn on_fault_in(&mut self, val: &bool) {
         trace!(target: &self.log_key, "Fault input signal: {}", val);
-        // if *val {
-        //     let _ = self
-        //         .sm
-        //         .as_mut()
-        //         .unwrap()
-        //         .process_event(OperationsEvents::FaultOn)
-        //         .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
-        // } else {
-        //     let _ = self
-        //         .sm
-        //         .as_mut()
-        //         .unwrap()
-        //         .process_event(OperationsEvents::FaultOff)
-        //         .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
-        // }
+        if *val {
+            let _ = self
+                .sm
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .process_event(OperationsEvents::FaultOn)
+                .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
+        } else {
+            let _ = self
+                .sm
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .process_event(OperationsEvents::FaultOff)
+                .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
+        }
     }
     fn on_entry_stopped(&mut self) {
-        println!("Entering Stopped state");
+        let _ = self.stopped.send(true);
     }
     fn on_exit_stopped(&mut self) {
-        println!("Exiting Stopped state");
+        let _ = self.stopped.send(false);
+        let _ = self.stop_reason.send("".to_string());
     }
     fn on_entry_starting(&mut self) {
-        println!("Entering Starting state");
+        let _ = self.starting.send(true);
+
+        let sm = Arc::clone(&self.sm);
+        if let Some(startup_time) = self.confman.read().startup_time {
+            tokio::spawn(async move {
+                tokio::time::sleep(startup_time).await;
+                let _ = sm
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .process_event(OperationsEvents::StartingFinished);
+            });
+        }
     }
     fn on_exit_starting(&mut self) {
-        println!("Exiting Starting state");
+        let _ = self.starting.send(false);
     }
     fn on_entry_running(&mut self) {
-        println!("Entering Running state");
+        let _ = self.running.send(true);
     }
     fn on_exit_running(&mut self) {
-        println!("Exiting Running state");
+        let _ = self.running.send(false);
     }
     fn on_entry_stopping(&mut self) {
-        println!("Entering Stopping state");
+        let _ = self.stopping.send(true);
+
+        let sm = Arc::clone(&self.sm);
+        if let Some(stopping_time) = self.confman.read().stopping_time {
+            tokio::spawn(async move {
+                tokio::time::sleep(stopping_time).await;
+                let _ = sm
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .process_event(OperationsEvents::StoppingFinished);
+            });
+        }
     }
     fn on_exit_stopping(&mut self) {
-        println!("Exiting Stopping state");
+        let _ = self.stopping.send(false);
     }
     fn on_entry_cleaning(&mut self) {
-        println!("Entering Cleaning state");
+        let _ = self.cleaning.send(true);
     }
     fn on_exit_cleaning(&mut self) {
-        println!("Exiting Cleaning state");
+        let _ = self.cleaning.send(false);
     }
     fn on_entry_emergency(&mut self) {
-        println!("Entering Emergency state");
+        let _ = self.emergency_out.send(true);
     }
     fn on_exit_emergency(&mut self) {
-        println!("Exiting Emergency state");
+        let _ = self.emergency_out.send(false);
     }
     fn on_entry_fault(&mut self) {
-        println!("Entering Fault state");
+        let _ = self.fault_out.send(true);
     }
     fn on_exit_fault(&mut self) {
-        println!("Exiting Fault state");
+        let _ = self.fault_out.send(false);
     }
     fn on_entry_maintenance(&mut self) {
-        println!("Entering Maintenance state");
+        let _ = self.maintenance_out.send(true);
     }
     fn on_exit_maintenance(&mut self) {
-        println!("Exiting Maintenance state");
+        let _ = self.maintenance_out.send(false);
     }
 
-    fn is_fault(&self) -> Result<bool, ()> {
-        Ok(false)
+    fn is_fault(&self) -> Result<bool, Box<dyn Error + Send + Sync>> {
+        self.fault_in.value()
     }
 }
 
+pub struct Context {
+    owner: *mut OperationsImpl,
+    log_key: String,
+}
 // todo: make this safe
 unsafe impl Send for Context {}
 unsafe impl Sync for Context {}
@@ -558,7 +634,12 @@ impl OperationsStateMachineContext for Context {
         });
     }
     fn is_fault(&self) -> Result<bool, ()> {
-        self.with_owner(|ops_impl| ops_impl.is_fault())
+        self.with_owner(|ops_impl| {
+            ops_impl.is_fault().map_err(|e| {
+                info!(target: &self.log_key, "Error getting fault state: {}", e);
+                ()
+            })
+        })
     }
     // Transition actions
     fn transition_to_stopped(&mut self) -> Result<(), ()> {

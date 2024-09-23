@@ -7,6 +7,7 @@ edition = "2021"
 derive_more = { version = "1.0.0", features = ["display"] }
 log = "0.4.22"
 parking_lot = { version = "0.12.3", features = ["arc_lock"] }
+schemars = "0.8.21"
 serde = "1.0.210"
 smlang = { version = "0.8.0", features = ["graphviz"] }
 # tfc = { git = "https://github.com/centroid-is/tfc.git", tag = "2024.9.1" }
