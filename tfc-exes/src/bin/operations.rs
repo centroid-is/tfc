@@ -841,12 +841,15 @@ impl OperationsStateMachineContext for Context {
         });
     }
     fn is_fault(&self) -> Result<bool, ()> {
-        self.with_owner(|ops_impl| {
-            ops_impl.is_fault().map_err(|e| {
-                info!(target: &self.log_key, "Error getting fault state: {}", e);
-                ()
+        // returns false if there is an error
+        Ok(self
+            .with_owner(|ops_impl| {
+                ops_impl.is_fault().map_err(|e| {
+                    info!(target: &self.log_key, "Error getting fault state: {}", e);
+                    ()
+                })
             })
-        })
+            .unwrap_or(false))
     }
     fn transition_callback(&self, exit: &OperationsStates, entry: &OperationsStates) {
         trace!(target: &self.log_key, "Transition from {:?}. to: {:?}", exit, entry);
