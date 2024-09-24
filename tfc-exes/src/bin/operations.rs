@@ -730,6 +730,14 @@ impl OperationsImpl {
     }
 }
 
+impl Drop for OperationsImpl {
+    fn drop(&mut self) {
+        info!(target: &self.log_key, "Dropping OperationsImpl");
+        let _ = self.stop_task.take().unwrap().abort();
+        let _ = self.new_mode_task.take().unwrap().abort();
+    }
+}
+
 pub struct Context {
     owner: *mut OperationsImpl,
     log_key: String,
