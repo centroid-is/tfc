@@ -15,7 +15,9 @@ use tfc::progbase;
 use tokio;
 use zbus::interface;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type, Display,
+)]
 pub enum OperationMode {
     Unknown = 0,
     Stopped = 1,
@@ -112,6 +114,22 @@ statemachine! {
         Maintenance + MaintenanceButton / transition_to_stopped = Stopped,
         Maintenance + SetStopped / transition_to_stopped = Stopped,
     },
+}
+
+impl From<&OperationsStates> for OperationMode {
+    fn from(state: &OperationsStates) -> Self {
+        match state {
+            OperationsStates::Stopped => OperationMode::Stopped,
+            OperationsStates::Starting => OperationMode::Starting,
+            OperationsStates::Running => OperationMode::Running,
+            OperationsStates::Stopping => OperationMode::Stopping,
+            OperationsStates::Cleaning => OperationMode::Cleaning,
+            OperationsStates::Emergency => OperationMode::Emergency,
+            OperationsStates::Fault => OperationMode::Fault,
+            OperationsStates::Maintenance => OperationMode::Maintenance,
+            OperationsStates::Init => OperationMode::Unknown,
+        }
+    }
 }
 
 #[derive(Default, Serialize, Deserialize, JsonSchema)]
@@ -538,12 +556,15 @@ impl OperationsImpl {
     fn transition(&mut self, from: &OperationsStates, to: &OperationsStates) -> Result<(), ()> {
         trace!(target: &self.log_key, "Transitioning from {:?} to {:?}", from, to);
 
-        // self.mode.send(*to as u64);
+        let new_mode = OperationMode::from(to);
+        let old_mode = OperationMode::from(from);
+        let _ = self.mode.send(new_mode as u64);
+        let _ = self.mode_str.send(new_mode.to_string());
 
         let shared_bus = self.bus.clone();
         let shared_dbus_path = self.dbus_path.clone();
-        let new_mode = to.to_string();
-        let old_mode = from.to_string();
+        let new_mode_str = new_mode.to_string();
+        let old_mode_str = old_mode.to_string();
 
         tokio::spawn(async move {
             let iface: zbus::InterfaceRef<OperationsClient> = shared_bus
@@ -551,7 +572,8 @@ impl OperationsImpl {
                 .interface(shared_dbus_path)
                 .await
                 .unwrap();
-            let _ = OperationsClient::update(&iface.signal_context(), &new_mode, &old_mode).await;
+            let _ = OperationsClient::update(&iface.signal_context(), &new_mode_str, &old_mode_str)
+                .await;
         });
         Ok(())
     }
