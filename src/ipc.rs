@@ -665,7 +665,7 @@ where
             // This happens when the signal has not been registered yet,
             // which can happen if the signal is sent before the interface is registered
             // We simply ignore this case as the interface will be registered soon
-            log!(target: &base.log_key, Level::Error,
+            log!(target: &base.log_key, Level::Info,
                 "Error sending signal value: {}", iface.err().unwrap());
         }
         Ok(())
