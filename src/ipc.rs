@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc};
 use tokio::select;
 use tokio::sync::{Notify, RwLock};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zbus::{interface, zvariant::Type};
 use zeromq::{
@@ -78,6 +79,7 @@ where
     filters: Arc<Mutex<Filters<T>>>,
     dbus_path: String,
     bus: zbus::Connection,
+    recv_task: Option<JoinHandle<()>>,
     log_key: String,
 }
 
@@ -199,6 +201,7 @@ where
             filters,
             dbus_path,
             bus,
+            recv_task: None,
             log_key,
         }
     }
@@ -259,7 +262,7 @@ where
         let shared_bus = self.bus.clone();
         let shared_dbus_path = self.dbus_path.clone();
 
-        tokio::spawn(async move {
+        self.recv_task.replace(tokio::spawn(async move {
             loop {
                 let slot_guard = shared_slot.read().await; // Create a binding for the read guard
                 let mut new_value_guard = shared_new_value_channel.lock();
@@ -309,7 +312,7 @@ where
                     }
                 }
             }
-        });
+        }));
     }
     pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         let shared_slot: Arc<RwLock<SlotImpl<T>>> = Arc::clone(&self.slot);
@@ -320,6 +323,14 @@ where
             shared_slot.write().await.connect(&name)
         });
         Ok(())
+    }
+}
+impl<T: Send + Sync + 'static + PartialEq + AnyFilterDecl> Drop for Slot<T>
+where
+    <T as AnyFilterDecl>::Type: Filter<T>,
+{
+    fn drop(&mut self) {
+        self.recv_task.take().unwrap().abort();
     }
 }
 
