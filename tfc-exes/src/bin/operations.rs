@@ -1,18 +1,24 @@
 use derive_more::Display;
+use futures::SinkExt;
+use futures::StreamExt;
+use futures_channel::mpsc;
 use log::{info, trace};
+use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smlang::statemachine;
 use std::cell::RefCell;
 use std::error::Error;
 use std::fmt::Debug;
-use std::sync::{Arc, Mutex};
+use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use tfc::confman;
 use tfc::ipc::{Base, Signal, Slot};
 use tfc::logger;
 use tfc::progbase;
 use tokio;
+use tokio::task::JoinHandle;
 use zbus::interface;
 
 #[derive(
@@ -30,14 +36,45 @@ pub enum OperationMode {
     Maintenance = 8,
 }
 
+impl FromStr for OperationMode {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s_lower = s.to_lowercase();
+        match s_lower.as_str() {
+            "unknown" => Ok(OperationMode::Unknown),
+            "stopped" => Ok(OperationMode::Stopped),
+            "starting" => Ok(OperationMode::Starting),
+            "running" => Ok(OperationMode::Running),
+            "stopping" => Ok(OperationMode::Stopping),
+            "cleaning" => Ok(OperationMode::Cleaning),
+            "emergency" => Ok(OperationMode::Emergency),
+            "fault" => Ok(OperationMode::Fault),
+            "maintenance" => Ok(OperationMode::Maintenance),
+            _ => Err(()),
+        }
+    }
+}
+
 struct OperationsClient {
     log_key: String,
+    new_mode_channel: mpsc::Sender<OperationMode>,
+    stop_channel: mpsc::Sender<String>,
+    current_mode: Arc<Mutex<OperationMode>>,
 }
 
 impl OperationsClient {
-    pub fn new(key: &str) -> Self {
+    pub fn new(
+        current_mode: Arc<Mutex<OperationMode>>,
+        new_mode_channel: mpsc::Sender<OperationMode>,
+        stop_channel: mpsc::Sender<String>,
+        key: &str,
+    ) -> Self {
         Self {
             log_key: key.to_string(),
+            new_mode_channel,
+            stop_channel,
+            current_mode,
         }
     }
 }
@@ -45,7 +82,7 @@ impl OperationsClient {
 impl OperationsClient {
     #[zbus(property)]
     async fn mode(&self) -> Result<String, zbus::fdo::Error> {
-        Ok("manual".to_string())
+        Ok(self.current_mode.lock().to_string())
     }
 
     #[zbus(signal)]
@@ -53,21 +90,28 @@ impl OperationsClient {
         signal_ctxt: &zbus::SignalContext<'_>,
         new_mode: &str,
         old_mode: &str,
-    ) -> zbus::Result<()> {
-        println!(
-            "Operation mode updated from {:?} to {:?}",
-            old_mode, new_mode
-        );
+    ) -> zbus::Result<()>;
+
+    async fn set_mode(&mut self, mode_str: &str) -> Result<(), zbus::fdo::Error> {
+        info!(target: &self.log_key, "Setting operation mode to {:?}", mode_str);
+        let mode: OperationMode = mode_str.parse().map_or(OperationMode::Unknown, |mode| mode);
+        self.new_mode_channel.send(mode).await.map_err(|e| {
+            let err_msg = format!("Error sending new mode: {}", e);
+            info!(target: &self.log_key, "{}", err_msg);
+            zbus::fdo::Error::Failed(err_msg)
+        })?;
         Ok(())
     }
 
-    fn set_mode(&self, mode: &str) -> Result<(), zbus::fdo::Error> {
-        println!("Setting operation mode to {:?}", mode);
-        Ok(())
-    }
-
-    fn stop_with_reason(&self, reason: &str) -> Result<(), zbus::fdo::Error> {
-        println!("Stopping with reason: {}", reason);
+    async fn stop_with_reason(&mut self, reason: &str) -> Result<(), zbus::fdo::Error> {
+        self.stop_channel
+            .send(reason.to_string())
+            .await
+            .map_err(|e| {
+                let err_msg = format!("Error sending stop: {}", e);
+                info!(target: &self.log_key, "{}", err_msg);
+                zbus::fdo::Error::Failed(err_msg)
+            })?;
         Ok(())
     }
 }
@@ -166,13 +210,26 @@ pub struct OperationsImpl {
     confman: confman::ConfMan<Storage>,
     dbus_path: String,
     bus: zbus::Connection,
+    current_mode: Arc<Mutex<OperationMode>>,
+    stop_channel: Arc<Mutex<mpsc::Receiver<String>>>,
+    stop_task: Option<JoinHandle<()>>,
+    new_mode_channel: Arc<Mutex<mpsc::Receiver<OperationMode>>>,
+    new_mode_task: Option<JoinHandle<()>>,
 }
 
 impl OperationsImpl {
     pub fn new(bus: zbus::Connection) -> Arc<Mutex<Self>> {
         let bus_cp = bus.clone();
         let path = "/is/centroid/OperationMode";
-        let client = OperationsClient::new("OperationMode");
+        let current_mode = Arc::new(Mutex::new(OperationMode::Unknown));
+        let (new_mode_tx, new_mode_rx) = mpsc::channel(10);
+        let (stop_tx, stop_rx) = mpsc::channel(10);
+        let client = OperationsClient::new(
+            Arc::clone(&current_mode),
+            new_mode_tx,
+            stop_tx,
+            "OperationMode",
+        );
         let log_key = "OperationMode";
         tokio::spawn(async move {
             // log if error
@@ -272,85 +329,104 @@ impl OperationsImpl {
             }),
             dbus_path: path.to_string(),
             bus,
+            current_mode,
+            stop_channel: Arc::new(Mutex::new(stop_rx)),
+            stop_task: None,
+            new_mode_channel: Arc::new(Mutex::new(new_mode_rx)),
+            new_mode_task: None,
         }));
 
-        let mut ops_impl = ctx.lock().unwrap();
+        let mut ops_impl = ctx.lock();
         let ops_impl_ptr: *mut OperationsImpl = &mut *ops_impl as *mut OperationsImpl;
         drop(ops_impl);
         let context = Context {
             log_key: "StateMachine".to_string(),
             owner: ops_impl_ptr,
-            last_state: RefCell::new(OperationsStates::Init),
         };
 
         ctx.lock()
-            .unwrap()
             .sm
             .lock()
-            .unwrap()
             .replace(OperationsStateMachine::new(context));
 
+        let shared_stop_channel = Arc::clone(&ctx.lock().stop_channel);
+        let shared_ctx = Arc::clone(&ctx);
+        ctx.lock().stop_task.replace(tokio::spawn(async move {
+            let mut stop_channel = shared_stop_channel.lock();
+            while let Some(reason) = stop_channel.next().await {
+                shared_ctx.lock().on_stop_reason(&reason);
+            }
+        }));
+
+        let shared_new_mode_channel = Arc::clone(&ctx.lock().new_mode_channel);
+        let shared_ctx = Arc::clone(&ctx);
+        ctx.lock().new_mode_task.replace(tokio::spawn(async move {
+            let mut new_mode_channel = shared_new_mode_channel.lock();
+            while let Some(mode) = new_mode_channel.next().await {
+                shared_ctx.lock().on_new_mode(mode);
+            }
+        }));
+
         let shared_ctx = Arc::clone(&ctx);
         ctx.lock()
-            .unwrap()
             .starting_finished
             .recv(Box::new(move |val: &bool| {
-                shared_ctx.lock().unwrap().on_starting_finished(val);
+                shared_ctx.lock().on_starting_finished(val);
             }));
         let shared_ctx = Arc::clone(&ctx);
         ctx.lock()
-            .unwrap()
             .stopping_finished
             .recv(Box::new(move |val: &bool| {
-                shared_ctx.lock().unwrap().on_stopping_finished(val);
+                shared_ctx.lock().on_stopping_finished(val);
             }));
         let shared_ctx = Arc::clone(&ctx);
-        ctx.lock()
-            .unwrap()
-            .run_button
-            .recv(Box::new(move |val: &bool| {
-                shared_ctx.lock().unwrap().on_run_button(val);
-            }));
+        ctx.lock().run_button.recv(Box::new(move |val: &bool| {
+            shared_ctx.lock().on_run_button(val);
+        }));
+        let shared_ctx = Arc::clone(&ctx);
+        ctx.lock().cleaning_button.recv(Box::new(move |val: &bool| {
+            shared_ctx.lock().on_cleaning_button(val);
+        }));
         let shared_ctx = Arc::clone(&ctx);
         ctx.lock()
-            .unwrap()
-            .cleaning_button
-            .recv(Box::new(move |val: &bool| {
-                shared_ctx.lock().unwrap().on_cleaning_button(val);
-            }));
-        let shared_ctx = Arc::clone(&ctx);
-        ctx.lock()
-            .unwrap()
             .maintenance_button
             .recv(Box::new(move |val: &bool| {
-                shared_ctx.lock().unwrap().on_maintenance_button(val);
+                shared_ctx.lock().on_maintenance_button(val);
             }));
         let shared_ctx = Arc::clone(&ctx);
-        ctx.lock()
-            .unwrap()
-            .emergency_in
-            .recv(Box::new(move |val: &bool| {
-                shared_ctx.lock().unwrap().on_emergency_in(val);
-            }));
+        ctx.lock().emergency_in.recv(Box::new(move |val: &bool| {
+            shared_ctx.lock().on_emergency_in(val);
+        }));
         let shared_ctx = Arc::clone(&ctx);
-        ctx.lock()
-            .unwrap()
-            .fault_in
-            .recv(Box::new(move |val: &bool| {
-                shared_ctx.lock().unwrap().on_fault_in(val);
-            }));
+        ctx.lock().fault_in.recv(Box::new(move |val: &bool| {
+            shared_ctx.lock().on_fault_in(val);
+        }));
 
-        let _ = ctx.lock().unwrap().starting.send(false);
-        let _ = ctx.lock().unwrap().stopping.send(false);
-        let _ = ctx.lock().unwrap().cleaning.send(false);
-        let _ = ctx.lock().unwrap().emergency_out.send(false);
-        let _ = ctx.lock().unwrap().fault_out.send(false);
-        let _ = ctx.lock().unwrap().maintenance_out.send(false);
-        let _ = ctx.lock().unwrap().running.send(false);
-        let _ = ctx.lock().unwrap().stopped.send(false);
-        let _ = ctx.lock().unwrap().mode.send(OperationMode::Unknown as u64);
-        let _ = ctx.lock().unwrap().mode_str.send("unknown".to_string());
-        let _ = ctx.lock().unwrap().stop_reason.send("".to_string());
+        let _ = ctx.lock().starting.send(false);
+        let _ = ctx.lock().stopping.send(false);
+        let _ = ctx.lock().cleaning.send(false);
+        let _ = ctx.lock().emergency_out.send(false);
+        let _ = ctx.lock().fault_out.send(false);
+        let _ = ctx.lock().maintenance_out.send(false);
+        let _ = ctx.lock().running.send(false);
+        let _ = ctx.lock().stopped.send(false);
+        let _ = ctx.lock().mode.send(OperationMode::Unknown as u64);
+        let _ = ctx.lock().mode_str.send("unknown".to_string());
+        let _ = ctx.lock().stop_reason.send("".to_string());
+
+        {
+            // todo should we just stop the init state?
+            // it's nice to call transition and so forth
+            let _ = ctx
+                .lock()
+                .sm
+                .lock()
+                .as_mut()
+                .unwrap()
+                .process_event(OperationsEvents::SetStopped)
+                .map_err(|e| info!(target: log_key,"Error processing event: {:?}", e));
+        }
+
         ctx
     }
 
@@ -363,7 +439,6 @@ impl OperationsImpl {
         let _ = self
             .sm
             .lock()
-            .unwrap()
             .as_mut()
             .unwrap()
             .process_event(OperationsEvents::StartingFinished)
@@ -378,7 +453,6 @@ impl OperationsImpl {
         let _ = self
             .sm
             .lock()
-            .unwrap()
             .as_mut()
             .unwrap()
             .process_event(OperationsEvents::StoppingFinished)
@@ -393,7 +467,6 @@ impl OperationsImpl {
         let _ = self
             .sm
             .lock()
-            .unwrap()
             .as_mut()
             .unwrap()
             .process_event(OperationsEvents::RunButton)
@@ -408,7 +481,6 @@ impl OperationsImpl {
         let _ = self
             .sm
             .lock()
-            .unwrap()
             .as_mut()
             .unwrap()
             .process_event(OperationsEvents::CleaningButton)
@@ -423,7 +495,6 @@ impl OperationsImpl {
         let _ = self
             .sm
             .lock()
-            .unwrap()
             .as_mut()
             .unwrap()
             .process_event(OperationsEvents::MaintenanceButton)
@@ -435,7 +506,6 @@ impl OperationsImpl {
             let _ = self
                 .sm
                 .lock()
-                .unwrap()
                 .as_mut()
                 .unwrap()
                 .process_event(OperationsEvents::EmergencyOn)
@@ -444,7 +514,6 @@ impl OperationsImpl {
             let _ = self
                 .sm
                 .lock()
-                .unwrap()
                 .as_mut()
                 .unwrap()
                 .process_event(OperationsEvents::EmergencyOff)
@@ -457,7 +526,6 @@ impl OperationsImpl {
             let _ = self
                 .sm
                 .lock()
-                .unwrap()
                 .as_mut()
                 .unwrap()
                 .process_event(OperationsEvents::FaultOn)
@@ -466,13 +534,94 @@ impl OperationsImpl {
             let _ = self
                 .sm
                 .lock()
-                .unwrap()
                 .as_mut()
                 .unwrap()
                 .process_event(OperationsEvents::FaultOff)
                 .map_err(|e| info!(target: &self.log_key,"Error processing event: {:?}", e));
         }
     }
+    fn on_stop_reason(&mut self, reason: &str) {
+        trace!(target: &self.log_key, "Stop reason: {}", reason);
+        let _ = self.stop_reason.send(reason.to_string());
+        let _ = self
+            .sm
+            .lock()
+            .as_mut()
+            .unwrap()
+            .process_event(OperationsEvents::SetStopped);
+    }
+    fn on_new_mode(&mut self, mode: OperationMode) {
+        trace!(target: &self.log_key, "New mode: {}", mode);
+        match mode {
+            OperationMode::Unknown => {}
+            OperationMode::Stopped => {
+                let _ = self
+                    .sm
+                    .lock()
+                    .as_mut()
+                    .unwrap()
+                    .process_event(OperationsEvents::SetStopped);
+            }
+            OperationMode::Starting => {
+                let _ = self
+                    .sm
+                    .lock()
+                    .as_mut()
+                    .unwrap()
+                    .process_event(OperationsEvents::SetStarting);
+            }
+            OperationMode::Running => {
+                let _ = self
+                    .sm
+                    .lock()
+                    .as_mut()
+                    .unwrap()
+                    .process_event(OperationsEvents::SetStarting);
+            }
+            OperationMode::Stopping => {
+                let _ = self
+                    .sm
+                    .lock()
+                    .as_mut()
+                    .unwrap()
+                    .process_event(OperationsEvents::SetStopped);
+            }
+            OperationMode::Cleaning => {
+                let _ = self
+                    .sm
+                    .lock()
+                    .as_mut()
+                    .unwrap()
+                    .process_event(OperationsEvents::SetCleaning);
+            }
+            OperationMode::Emergency => {
+                let _ = self
+                    .sm
+                    .lock()
+                    .as_mut()
+                    .unwrap()
+                    .process_event(OperationsEvents::SetEmergency);
+            }
+            OperationMode::Fault => {
+                let _ = self
+                    .sm
+                    .lock()
+                    .as_mut()
+                    .unwrap()
+                    .process_event(OperationsEvents::SetFault);
+            }
+            OperationMode::Maintenance => {
+                let _ = self
+                    .sm
+                    .lock()
+                    .as_mut()
+                    .unwrap()
+                    .process_event(OperationsEvents::SetMaintenance);
+            }
+        }
+    }
+
+    // State machine callbacks
     fn on_entry_stopped(&mut self) {
         let _ = self.stopped.send(true);
     }
@@ -489,10 +638,9 @@ impl OperationsImpl {
                 tokio::time::sleep(startup_time).await;
                 let _ = sm
                     .lock()
-                    .unwrap()
                     .as_mut()
                     .unwrap()
-                    .process_event(OperationsEvents::StartingFinished);
+                    .process_event(OperationsEvents::StartingTimeout);
             });
         }
     }
@@ -514,10 +662,9 @@ impl OperationsImpl {
                 tokio::time::sleep(stopping_time).await;
                 let _ = sm
                     .lock()
-                    .unwrap()
                     .as_mut()
                     .unwrap()
-                    .process_event(OperationsEvents::StoppingFinished);
+                    .process_event(OperationsEvents::StoppingTimeout);
             });
         }
     }
@@ -561,11 +708,15 @@ impl OperationsImpl {
         let _ = self.mode.send(new_mode as u64);
         let _ = self.mode_str.send(new_mode.to_string());
 
+        {
+            let mut current_mode = self.current_mode.lock();
+            *current_mode = new_mode;
+        }
+
         let shared_bus = self.bus.clone();
         let shared_dbus_path = self.dbus_path.clone();
         let new_mode_str = new_mode.to_string();
         let old_mode_str = old_mode.to_string();
-
         tokio::spawn(async move {
             let iface: zbus::InterfaceRef<OperationsClient> = shared_bus
                 .object_server()
@@ -582,7 +733,6 @@ impl OperationsImpl {
 pub struct Context {
     owner: *mut OperationsImpl,
     log_key: String,
-    last_state: RefCell<OperationsStates>,
 }
 // todo: make this safe
 unsafe impl Send for Context {}
@@ -691,15 +841,17 @@ impl OperationsStateMachineContext for Context {
             })
         })
     }
-    fn log_process_event(&self, current_state: &OperationsStates, event: &OperationsEvents) {
+    fn transition_callback(&self, exit: &OperationsStates, entry: &OperationsStates) {
+        trace!(target: &self.log_key, "Transition from {:?}. to: {:?}", exit, entry);
+        self.with_owner(|ops_impl| {
+            let _ = ops_impl.transition(exit, entry);
+        });
+    }
+    fn log_process_event(&self, last_state: &OperationsStates, event: &OperationsEvents) {
         trace!(target: &self.log_key,
             "[StateMachineLogger]\t[{:?}] Processing event {:?}",
-            current_state, event
+            last_state, event
         );
-        self.with_owner(|ops_impl| {
-            let _ = ops_impl.transition(&self.last_state.borrow(), current_state);
-        });
-        self.last_state.replace(current_state.clone());
     }
 }
 
