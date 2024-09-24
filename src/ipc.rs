@@ -654,12 +654,20 @@ where
         let base = base.lock();
         let value_guard = base.value.read().await;
         let value_ref = value_guard.as_ref().unwrap();
-        let iface: zbus::InterfaceRef<SignalInterface<T>> = bus
+
+        let iface: Result<zbus::InterfaceRef<SignalInterface<T>>, zbus::Error> = bus
             .object_server()
             .interface(dbus_path.lock().as_str())
-            .await
-            .unwrap();
-        SignalInterface::value(&iface.signal_context(), value_ref).await?;
+            .await;
+        if let Ok(iface) = iface {
+            SignalInterface::value(&iface.signal_context(), value_ref).await?;
+        } else {
+            // This happens when the signal has not been registered yet,
+            // which can happen if the signal is sent before the interface is registered
+            // We simply ignore this case as the interface will be registered soon
+            log!(target: &base.log_key, Level::Error,
+                "Error sending signal value: {}", iface.err().unwrap());
+        }
         Ok(())
     }
 
