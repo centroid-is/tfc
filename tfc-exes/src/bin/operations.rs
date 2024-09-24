@@ -7,7 +7,6 @@ use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smlang::statemachine;
-use std::cell::RefCell;
 use std::error::Error;
 use std::fmt::Debug;
 use std::str::FromStr;
