@@ -78,41 +78,41 @@ statemachine! {
     derive_states: [Debug, Display, Clone],
     derive_events: [Debug, Display],
     transitions: {
-        *Init + SetStopped / transition_to_stopped = Stopped,
+        *Init + SetStopped = Stopped,
 
-        Stopped + SetStarting / transition_to_starting = Starting,
-        Stopped + RunButton / transition_to_starting = Starting,
-        Starting + StartingTimeout / transition_to_running = Running,
-        Starting + StartingFinished / transition_to_running = Running,
-        Running + RunButton / transition_to_stopping = Stopping,
-        Running + SetStopped / transition_to_stopping = Stopping,
-        Stopping + StoppingTimeout / transition_to_stopped = Stopped,
-        Stopping + StoppingFinished / transition_to_stopped = Stopped,
+        Stopped + SetStarting = Starting,
+        Stopped + RunButton = Starting,
+        Starting + StartingTimeout = Running,
+        Starting + StartingFinished = Running,
+        Running + RunButton = Stopping,
+        Running + SetStopped = Stopping,
+        Stopping + StoppingTimeout = Stopped,
+        Stopping + StoppingFinished = Stopped,
 
-        Stopped + CleaningButton / transition_to_cleaning = Cleaning,
-        Stopped + SetCleaning / transition_to_cleaning = Cleaning,
-        Cleaning + CleaningButton / transition_to_stopped = Stopped,
-        Cleaning + SetStopped / transition_to_stopped = Stopped,
+        Stopped + CleaningButton = Cleaning,
+        Stopped + SetCleaning = Cleaning,
+        Cleaning + CleaningButton = Stopped,
+        Cleaning + SetStopped = Stopped,
 
         // Transitions to Emergency
-        _ + SetEmergency / transition_to_emergency = Emergency,
+        _ + SetEmergency = Emergency,
 
-        _ + EmergencyOn / transition_to_emergency = Emergency,
+        _ + EmergencyOn = Emergency,
 
-        Emergency + EmergencyOff [!is_fault] / transition_to_stopped = Stopped,
-        Emergency + EmergencyOff [is_fault] / transition_to_fault = Fault,
+        Emergency + EmergencyOff [!is_fault] = Stopped,
+        Emergency + EmergencyOff [is_fault] = Fault,
 
-        Stopped + FaultOn / transition_to_fault = Fault,
-        Stopped + SetFault / transition_to_fault = Fault,
-        Running + FaultOn / transition_to_fault = Fault,
-        Running + SetFault / transition_to_fault = Fault,
+        Stopped + FaultOn = Fault,
+        Stopped + SetFault = Fault,
+        Running + FaultOn = Fault,
+        Running + SetFault = Fault,
 
-        Fault + FaultOff / transition_to_stopped = Stopped,
+        Fault + FaultOff = Stopped,
 
-        Stopped + MaintenanceButton / transition_to_maintenance = Maintenance,
-        Stopped + SetMaintenance / transition_to_maintenance = Maintenance,
-        Maintenance + MaintenanceButton / transition_to_stopped = Stopped,
-        Maintenance + SetStopped / transition_to_stopped = Stopped,
+        Stopped + MaintenanceButton = Maintenance,
+        Stopped + SetMaintenance = Maintenance,
+        Maintenance + MaintenanceButton = Stopped,
+        Maintenance + SetStopped = Stopped,
     },
 }
 
@@ -691,41 +691,6 @@ impl OperationsStateMachineContext for Context {
             })
         })
     }
-    // Transition actions
-    fn transition_to_stopped(&mut self) -> Result<(), ()> {
-        let to_state = OperationsStates::Stopped;
-        Ok(())
-    }
-    fn transition_to_starting(&mut self) -> Result<(), ()> {
-        let to_state = OperationsStates::Starting;
-        Ok(())
-    }
-    fn transition_to_running(&mut self) -> Result<(), ()> {
-        let to_state = OperationsStates::Running;
-        Ok(())
-    }
-    fn transition_to_stopping(&mut self) -> Result<(), ()> {
-        let to_state = OperationsStates::Stopping;
-        Ok(())
-    }
-    fn transition_to_cleaning(&mut self) -> Result<(), ()> {
-        let to_state = OperationsStates::Cleaning;
-        Ok(())
-    }
-
-    fn transition_to_emergency(&mut self) -> Result<(), ()> {
-        let to_state = OperationsStates::Emergency;
-        Ok(())
-    }
-    fn transition_to_fault(&mut self) -> Result<(), ()> {
-        let to_state = OperationsStates::Fault;
-        Ok(())
-    }
-    fn transition_to_maintenance(&mut self) -> Result<(), ()> {
-        let to_state = OperationsStates::Maintenance;
-        Ok(())
-    }
-
     fn log_process_event(&self, current_state: &OperationsStates, event: &OperationsEvents) {
         trace!(target: &self.log_key,
             "[StateMachineLogger]\t[{:?}] Processing event {:?}",
