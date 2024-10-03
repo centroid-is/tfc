@@ -310,6 +310,43 @@ where
         }
     }
 
+    pub fn stream(&self) -> mpsc::Receiver<T> {
+        let (mut sender, receiver) = mpsc::channel(10);
+        let shared_slot = Arc::clone(&self.slot);
+        let shared_new_value_channel = Arc::clone(&self.new_value_channel);
+        let shared_connect_notify = Arc::clone(&self.connect_notify);
+        let shared_filters = Arc::clone(&self.filters);
+        let shared_last_value = Arc::clone(&self.last_value);
+        let shared_bus = self.bus.clone();
+        let shared_dbus_path = self.dbus_path.clone();
+        let log_key = self.log_key.clone();
+        tokio::spawn(async move {
+            loop {
+                let res = Slot::async_recv_(
+                    Arc::clone(&shared_slot),
+                    Arc::clone(&shared_new_value_channel),
+                    Arc::clone(&shared_connect_notify),
+                    Arc::clone(&shared_filters),
+                    Arc::clone(&shared_last_value),
+                    shared_bus.clone(),
+                    &shared_dbus_path,
+                    &log_key,
+                )
+                .await;
+                if res.is_ok() {
+                    let shared_last_value = res.unwrap();
+                    let guard = shared_last_value.lock();
+                    let value = guard.as_ref().unwrap();
+                    sender.send(value.clone()).await.unwrap();
+                } else {
+                    log!(target: &log_key, Level::Warn,
+                        "Error receiving value: {}", res.err().unwrap());
+                }
+            }
+        });
+        receiver
+    }
+
     pub fn recv(&mut self, callback: Box<dyn Fn(&T) + Send + Sync>)
     where
         <T as AnyFilterDecl>::Type: Send + Sync + Filter<T>,
