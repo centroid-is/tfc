@@ -210,28 +210,28 @@ where
         value: T,
         shared_filters: Arc<Mutex<Filters<T>>>,
         shared_last_value: Arc<Mutex<Option<T>>>,
-        shared_cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>,
         shared_bus: zbus::Connection,
         shared_dbus_path: &str,
         log_key: &str,
-    ) {
+    ) -> Result<Arc<Mutex<Option<T>>>, Box<dyn Error + Send + Sync>> {
         let filtered_value = shared_filters.lock().process(value).await;
         match filtered_value {
             Ok(filtered) => {
                 *shared_last_value.lock() = Some(filtered);
                 let value_guard = shared_last_value.lock();
                 let value_ref = value_guard.as_ref().unwrap();
-                shared_cb.lock()(value_ref);
                 let iface: zbus::InterfaceRef<SlotInterface<T>> = shared_bus
                     .object_server()
                     .interface(shared_dbus_path)
                     .await
                     .unwrap();
                 let _ = SlotInterface::value(&iface.signal_context(), value_ref).await;
+                Ok(Arc::clone(&shared_last_value))
             }
             Err(err) => {
                 log!(target: log_key, Level::Trace,
                     "Filtered out value reason: {}", err);
+                Err(err)
             }
         }
     }
@@ -244,6 +244,69 @@ where
                 std::io::ErrorKind::Other,
                 "No value set",
             ))),
+        }
+    }
+
+    async fn async_recv_(
+        shared_slot: Arc<RwLock<SlotImpl<T>>>,
+        shared_new_value_channel: Arc<Mutex<mpsc::Receiver<T>>>,
+        shared_connect_notify: Arc<Notify>,
+        shared_filters: Arc<Mutex<Filters<T>>>,
+        shared_last_value: Arc<Mutex<Option<T>>>,
+        shared_bus: zbus::Connection,
+        shared_dbus_path: &str,
+        log_key: &str,
+    ) -> Result<Arc<Mutex<Option<T>>>, Box<dyn Error + Send + Sync>> {
+        loop {
+            let slot_guard = shared_slot.read().await; // Create a binding for the read guard
+            let mut new_value_guard = shared_new_value_channel.lock();
+            tokio::select! {
+                result = slot_guard.recv() => {
+                    match result {
+                        Ok(value) => {
+                            return Slot::process_value(
+                                value,
+                                Arc::clone(&shared_filters),
+                                Arc::clone(&shared_last_value),
+                                shared_bus.clone(),
+                                shared_dbus_path,
+                                &log_key,
+                            ).await;
+                        }
+                        Err(e) => {
+                            log!(target: &log_key, Level::Info,
+                                "Unsuccessful receive on slot, error: {}", e);
+                            return Err(e);
+                        }
+                    }
+                },
+                _ = shared_connect_notify.notified() => {
+                    log!(target: &log_key, Level::Info,
+                            "Connecting to other signal, let's try receiving from it");
+                },
+                result = new_value_guard.next() => {
+                    match result {
+                        Some(value) => {
+                            return Slot::process_value(
+                                value,
+                                Arc::clone(&shared_filters),
+                                Arc::clone(&shared_last_value),
+                                shared_bus.clone(),
+                                shared_dbus_path,
+                                &log_key,
+                            ).await;
+                        }
+                        None => {
+                            log!(target: &log_key, Level::Trace,
+                                "New value channel ended");
+                            return Err(Box::new(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "New value channel ended",
+                            )));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -264,52 +327,25 @@ where
 
         self.recv_task.replace(tokio::spawn(async move {
             loop {
-                let slot_guard = shared_slot.read().await; // Create a binding for the read guard
-                let mut new_value_guard = shared_new_value_channel.lock();
-                tokio::select! {
-                    result = slot_guard.recv() => {
-                        match result {
-                            Ok(value) => {
-                                Slot::process_value(
-                                    value,
-                                    Arc::clone(&shared_filters),
-                                    Arc::clone(&shared_last_value),
-                                    Arc::clone(&shared_cb),
-                                    shared_bus.clone(),
-                                    shared_dbus_path.as_str(),
-                                    &log_key,
-                                ).await;
-                            }
-                            Err(e) => {
-                                log!(target: &log_key, Level::Info,
-                                    "Unsuccessful receive on slot, error: {}", e);
-                            }
-                        }
-                    },
-                    _ = shared_connect_notify.notified() => {
-                        log!(target: &log_key, Level::Info,
-                                "Connecting to other signal, let's try receiving from it");
-                    },
-                    result = new_value_guard.next() => {
-                        match result {
-                            Some(value) => {
-                                Slot::process_value(
-                                    value,
-                                    Arc::clone(&shared_filters),
-                                    Arc::clone(&shared_last_value),
-                                    Arc::clone(&shared_cb),
-                                    shared_bus.clone(),
-                                    shared_dbus_path.as_str(),
-                                    &log_key,
-                                ).await;
-                            }
-                            None => {
-                                log!(target: &log_key, Level::Trace,
-                                    "New value channel ended");
-                                break;
-                            }
-                        }
-                    }
+                let res = Slot::async_recv_(
+                    Arc::clone(&shared_slot),
+                    Arc::clone(&shared_new_value_channel),
+                    Arc::clone(&shared_connect_notify),
+                    Arc::clone(&shared_filters),
+                    Arc::clone(&shared_last_value),
+                    shared_bus.clone(),
+                    &shared_dbus_path,
+                    &log_key,
+                )
+                .await;
+                if res.is_ok() {
+                    let shared_last_value = res.unwrap();
+                    let guard = shared_last_value.lock();
+                    let value = guard.as_ref().unwrap();
+                    shared_cb.lock()(&value);
+                } else {
+                    log!(target: &log_key, Level::Warn,
+                        "Error receiving value: {}", res.err().unwrap());
                 }
             }
         }));
