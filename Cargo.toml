@@ -42,3 +42,7 @@ tokio-util = "0.7.12"
 
 [dev-dependencies]
 rand = "0.8.5"
+
+
+[features]
+s3x-legacy-naming = []
