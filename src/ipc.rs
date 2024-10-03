@@ -330,7 +330,9 @@ where
     <T as AnyFilterDecl>::Type: Filter<T>,
 {
     fn drop(&mut self) {
-        self.recv_task.take().unwrap().abort();
+        if let Some(task) = self.recv_task.take() {
+            task.abort();
+        }
     }
 }
 
