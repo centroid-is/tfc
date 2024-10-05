@@ -1,29 +1,15 @@
-// mod confman;
-// mod filter;
-// mod progbase;
-
-// fn main() {
-//     println!("Hello, world!");
-// }
-
-mod confman;
-mod filter;
-mod ipc;
-mod ipc_ruler_client;
-mod logger;
-mod progbase;
+use tfc::confman::ConfMan;
+use tfc::ipc::{Base, Signal, Slot, SlotImpl};
+use tfc::logger;
+use tfc::progbase;
 
 use std::future::pending;
 use std::sync::{Arc, Mutex};
-
-use confman::ConfMan;
-use ipc::{Base, Signal, Slot, SlotImpl};
 use log::{log, Level};
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
 use zbus::{connection, interface};
+use futures::StreamExt;
 
 #[derive(Deserialize, Serialize, JsonSchema, Default)]
 struct Greeter {
@@ -92,15 +78,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut i64_raw_slot = SlotImpl::<i64>::new(Base::new("hello", None));
     // let mut bool_slot = Slot::<bool>::new(_conn.clone(), Base::new("bar", None));
     let mut i64_slot = Slot::<i64>::new(_conn.clone(), Base::new("bar", None));
+    let mut i64_slot_stream = Slot::<i64>::new(_conn.clone(), Base::new("stream", None));
     i64_slot.recv(Box::new(|&val| {
         println!("Received value: {:?}", val);
     }));
     println!("Slot created");
-    // let _ = i64_raw_slot.connect(i64_signal.full_name().as_str());
-    // let _ = i64_slot.connect(i64_signal.full_name().as_str());
+    let _ = i64_raw_slot.connect(i64_signal.full_name());
+    let _ = i64_slot.connect(i64_signal.full_name());
+    let _ = i64_slot_stream.connect(i64_signal.full_name());
     println!("Slot connected");
 
-    // i64_signal.init().await?;
+    let mut stream = i64_slot_stream.stream();
+    tokio::spawn(async move {
+        loop {
+            println!("awaiting new stream val");
+            let val = stream.next().await;
+            println!("Stream val: {:?}", val);
+        }
+    });
 
     tokio::spawn(async move {
         loop {
@@ -111,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     for i in 1..1024 {
-        i64_signal.send(i).await?;
+        i64_signal.async_send(i).await.expect("This should not fail");
         println!("The value of i is: {}", i);
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
