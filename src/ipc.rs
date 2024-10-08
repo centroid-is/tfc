@@ -610,7 +610,7 @@ where
                     .await
                 };
                 let timeout_task =
-                    async { tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await };
+                    async { tokio::time::sleep(tokio::time::Duration::from_millis(100)).await };
 
                 match select! {
                     result = connect_task => Either::Left(result),
@@ -631,6 +631,7 @@ where
                     }
                     Either::Left(Err(e)) => {
                         log!(target: &log_key_cp, Level::Trace, "Connect failed: {:?} will try again", e);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
                     Either::Right(_) => {
                         log!(target: &log_key_cp, Level::Trace, "Connect timed out");
