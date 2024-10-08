@@ -6,8 +6,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::{Arc, Mutex};
-
-#[derive(Parser)]
+#[derive(Parser, Default)]
 pub struct Opts {
     #[clap(short, long, default_value = "def")]
     pub id: String,
@@ -65,9 +64,12 @@ lazy_static::lazy_static! {
     }));
 }
 
-pub fn init() {
+pub fn try_init() -> Result<(), Box<dyn std::error::Error>> {
     let mut options = OPTIONS.lock().unwrap();
-    let opts = Opts::parse();
+    let mut opts = Opts::default();
+    opts.id = "def".to_string(); // todo would be nice to use the default from clap
+
+    let res = opts.try_update_from(std::env::args());
     if opts.version {
         /*
         git@github.com:centroid-is/framework-rs.git
@@ -88,6 +90,14 @@ pub fn init() {
         exit(0)
     }
     *options = Options::new(opts);
+    Ok(res?)
+}
+
+pub fn init() {
+    let res = try_init();
+    if res.is_err() {
+        panic!("Failed to initialize program base: {}", res.err().unwrap());
+    }
 }
 
 #[allow(dead_code)]
@@ -138,5 +148,23 @@ mod tests {
     fn progbase_test() {
         println!("Program started with ID: {}", proc_name());
         println!("Config directory: {}", config_directory().display());
+    }
+
+    #[test]
+    fn init_test() {
+        let _ = try_init();
+        let exe_name = exe_name();
+        println!("exe_name: {}", exe_name);
+        println!("proc_name: {}", proc_name());
+        assert_eq!(
+            exe_name,
+            std::env::current_exe()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string()
+        );
     }
 }
