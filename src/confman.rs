@@ -114,7 +114,9 @@ impl<
     }
 
     pub fn with_default(mut self, value: T) -> Self {
-        *self.write().value_mut() = value;
+        if self.storage.file_was_empty {
+            *self.write().value_mut() = value;
+        }
         self
     }
 
@@ -318,6 +320,7 @@ struct FileStorage<T> {
     value: RwLock<T>,
     filename: PathBuf,
     log_key: String,
+    file_was_empty: bool,
 }
 
 impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> FileStorage<T> {
@@ -345,7 +348,8 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> FileStorag
             });
         let mut file_content = String::new();
         let _ = file.read_to_string(&mut file_content);
-        if file_content.is_empty() {
+        let file_was_empty = file_content.is_empty();
+        if file_was_empty {
             // empty file let's create default constructed
             let default_value = T::default();
             file_content = serde_json::to_string(&default_value)
@@ -365,6 +369,7 @@ impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> FileStorag
             value: RwLock::new(deserialized_value),
             filename: path.clone(),
             log_key: path.to_str().unwrap().to_string(),
+            file_was_empty,
         }
     }
 
