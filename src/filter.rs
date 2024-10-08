@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::confman::ConfMan;
-
+use crate::time::MicroDuration;
 #[async_trait]
 pub trait Filter<T> {
     async fn filter(
@@ -57,8 +57,8 @@ impl<T: Send + Sync + 'static + PartialEq + Not<Output = T>> Filter<T> for Filte
 
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
 pub struct FilterTimer {
-    time_on: Duration,
-    time_off: Duration,
+    time_on: MicroDuration,
+    time_off: MicroDuration,
     #[serde(skip)]
     state: Arc<Mutex<Option<CancellationToken>>>,
 }
@@ -92,7 +92,7 @@ impl Filter<bool> for FilterTimer {
         }
 
         tokio::select! {
-            _ = tokio::time::sleep(duration) => {
+            _ = tokio::time::sleep(duration.into()) => {
                 // Check if the token has been cancelled.
                 if !new_token.is_cancelled() {
                     return Ok(value);

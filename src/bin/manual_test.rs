@@ -3,13 +3,11 @@ use tfc::ipc::{Base, Signal, Slot, SlotImpl};
 use tfc::logger;
 use tfc::progbase;
 
-use std::future::pending;
-use std::sync::{Arc, Mutex};
-use log::{log, Level};
+use futures::StreamExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use zbus::{connection, interface};
-use futures::StreamExt;
+use std::future::pending;
+use zbus::connection;
 
 #[derive(Deserialize, Serialize, JsonSchema, Default)]
 struct Greeter {
@@ -76,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let _ = Application::new(&i64_signal.full_name());
 
     let mut i64_raw_slot = SlotImpl::<i64>::new(Base::new("hello", None));
-    // let mut bool_slot = Slot::<bool>::new(_conn.clone(), Base::new("bar", None));
+    let mut bool_slot = Slot::<bool>::new(_conn.clone(), Base::new("bar", None));
     let mut i64_slot = Slot::<i64>::new(_conn.clone(), Base::new("bar", None));
     let mut i64_slot_stream = Slot::<i64>::new(_conn.clone(), Base::new("stream", None));
     i64_slot.recv(Box::new(|&val| {
@@ -105,8 +103,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    tokio::spawn(async move {
+        loop {
+            println!("awaiting new bool val");
+            let val = bool_slot.async_recv().await;
+            println!("Bool slot val: {:?}", val);
+        }
+    });
+
     for i in 1..1024 {
-        i64_signal.async_send(i).await.expect("This should not fail");
+        i64_signal
+            .async_send(i)
+            .await
+            .expect("This should not fail");
         println!("The value of i is: {}", i);
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
