@@ -401,6 +401,13 @@ where
             }
         }));
     }
+    pub async fn async_connect(
+        &mut self,
+        signal_name: &str,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.connect_notify.notify_waiters();
+        self.slot.write().await.async_connect(signal_name).await
+    }
     pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         let shared_slot: Arc<RwLock<SlotImpl<T>>> = Arc::clone(&self.slot);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
@@ -1288,10 +1295,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logger;
     use quantities::mass::Mass;
     use rand::Rng;
     use std::io::Cursor;
-    use crate::logger;
 
     fn packet_serialize_deserialize<T>(value: T)
     where
@@ -1376,23 +1383,23 @@ mod tests {
         progbase::init();
 
         let _ = logger::init_combined_logger();
-    
+
         let bus = zbus::connection::Builder::system()?
-            .name(format!(
-                "is.centroid.{}.{}",
-                "tfctest",
-                "tfctest"
-            ))?
+            .name(format!("is.centroid.{}.{}", "tfctest", "tfctest"))?
             .build()
             .await?;
         let mut my_little_slot = Slot::<bool>::new(bus.clone(), Base::new("my_little_slot", None));
         let mut my_little_signal = Signal::<bool>::new(bus, Base::new("my_little_signal", None));
 
-
-        let vals_to_send = vec![false, false, true, true, false, false, true, true, false, false, true, true, false, false];
+        let vals_to_send = vec![
+            false, false, true, true, false, false, true, true, false, false, true, true, false,
+            false,
+        ];
         let vals_to_recv = vec![false, true, false, true, false, true, false];
 
-        my_little_slot.connect(my_little_signal.full_name()).expect("This should connect");
+        my_little_slot
+            .connect(my_little_signal.full_name())
+            .expect("This should connect");
 
         let mut stream = my_little_slot.stream();
         let recv_task = tokio::spawn(async move {
@@ -1412,17 +1419,18 @@ mod tests {
 
         let send_task = tokio::spawn(async move {
             for val in vals_to_send {
-                my_little_signal.async_send(val).await.expect("This should not fail");
+                my_little_signal
+                    .async_send(val)
+                    .await
+                    .expect("This should not fail");
             }
         });
 
         let (recv_res, send_res) = tokio::join!(recv_task, send_task);
 
-        recv_res
-            .expect("Receiver task panicked");
-    
-        send_res
-            .expect("Sender task panicked");
+        recv_res.expect("Receiver task panicked");
+
+        send_res.expect("Sender task panicked");
 
         Ok(())
     }
