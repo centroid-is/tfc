@@ -673,7 +673,7 @@ where
     }
 }
 
-pub struct Signal<T> {
+pub struct Signal<T: TypeName> {
     signal: Arc<Mutex<SignalImpl<T>>>,
     full_name: String,
     base: Arc<Mutex<Base<T>>>,
@@ -862,7 +862,7 @@ where
     async fn value(signal_ctxt: &zbus::SignalContext<'_>, val: &T) -> zbus::Result<()>;
 }
 
-pub struct SignalImpl<T> {
+pub struct SignalImpl<T: TypeName> {
     base: Base<T>,
     sock: Arc<Mutex<PubSocket>>,
     monitor: Option<mpsc::Receiver<SocketEvent>>,
@@ -951,6 +951,15 @@ where
 
     pub fn full_name(&self) -> String {
         self.base.full_name()
+    }
+}
+
+impl<T: TypeName> Drop for SignalImpl<T> {
+    fn drop(&mut self) {
+        let sock = self.sock.lock();
+        drop(sock);
+        let file = self.base.endpoint();
+        std::fs::remove_file(file).unwrap_or(());
     }
 }
 
@@ -1390,14 +1399,14 @@ mod tests {
         packet_serialize_deserialize(Err(-1) as Result<Mass, i32>); // todo make
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_send_recv() -> Result<(), Box<dyn std::error::Error>> {
         setup_dirs();
         let _ = progbase::try_init();
         let _ = logger::init_combined_logger();
 
-        let mut slot = SlotImpl::<bool>::new(Base::new("slot", None));
-        let mut signal = SignalImpl::<bool>::new(Base::new("signal", None));
+        let mut slot = SlotImpl::<bool>::new(Base::new("slot1", None));
+        let mut signal = SignalImpl::<bool>::new(Base::new("signal1", None));
         signal.init().await?;
 
         slot.async_connect(signal.full_name().as_str())
@@ -1428,14 +1437,14 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_1000_sync_send_recv() -> Result<(), Box<dyn std::error::Error>> {
         setup_dirs();
         let _ = progbase::try_init();
         let _ = logger::init_combined_logger();
 
-        let mut slot = SlotImpl::<bool>::new(Base::new("slot", None));
-        let mut signal = SignalImpl::<bool>::new(Base::new("signal", None));
+        let mut slot = SlotImpl::<bool>::new(Base::new("slot2", None));
+        let mut signal = SignalImpl::<bool>::new(Base::new("signal2", None));
         signal.init().await?;
 
         slot.async_connect(signal.full_name().as_str())
@@ -1470,14 +1479,14 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_recv_after_send() -> Result<(), Box<dyn std::error::Error>> {
         setup_dirs();
         let _ = progbase::try_init();
         let _ = logger::init_combined_logger();
 
-        let mut slot = SlotImpl::<bool>::new(Base::new("slot", None));
-        let mut signal = SignalImpl::<bool>::new(Base::new("signal", None));
+        let mut slot = SlotImpl::<bool>::new(Base::new("slot3", None));
+        let mut signal = SignalImpl::<bool>::new(Base::new("signal3", None));
         signal.init().await?;
 
         slot.async_connect(signal.full_name().as_str())
