@@ -1303,7 +1303,12 @@ mod tests {
     use std::io::Cursor;
 
     fn setup_dirs() {
-        // let current_dir = std::env::current_dir().expect("Failed to get mkd
+        // let current_dir = std::env::current_dir().expect("Failed to get current directory");
+        // let current_dir_str = current_dir
+        //     .to_str()
+        //     .expect("Failed to convert path to string");
+        // std::env::set_var("RUNTIME_DIRECTORY", current_dir_str);
+        // std::env::set_var("CONFIGURATION_DIRECTORY", current_dir_str);
     }
 
     fn packet_serialize_deserialize<T>(value: T)
@@ -1405,6 +1410,83 @@ mod tests {
         );
 
         send.expect("Sender task panicked");
+
+        let value = match recv {
+            Ok(inner_result) => match inner_result {
+                Ok(value) => value,
+                Err(e) => {
+                    panic!("Error receiving value: {:?}", e);
+                }
+            },
+            Err(_) => {
+                panic!("Timeout occurred");
+            }
+        };
+
+        assert_eq!(value, true);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_1000_sync_send_recv() -> Result<(), Box<dyn std::error::Error>> {
+        setup_dirs();
+        let _ = progbase::try_init();
+        let _ = logger::init_combined_logger();
+
+        let mut slot = SlotImpl::<bool>::new(Base::new("slot", None));
+        let mut signal = SignalImpl::<bool>::new(Base::new("signal", None));
+        signal.init().await?;
+
+        slot.async_connect(signal.full_name().as_str())
+            .await
+            .expect("This should connect");
+
+        let mut send_value = true;
+        for _ in 0..1000 {
+            let (recv, send) = tokio::join!(
+                tokio::time::timeout(tokio::time::Duration::from_secs(1), slot.recv()),
+                signal.send(send_value)
+            );
+
+            send.expect("Sender task panicked");
+
+            let value = match recv {
+                Ok(inner_result) => match inner_result {
+                    Ok(value) => value,
+                    Err(e) => {
+                        panic!("Error receiving value: {:?}", e);
+                    }
+                },
+                Err(_) => {
+                    panic!("Timeout occurred");
+                }
+            };
+
+            assert_eq!(value, send_value);
+            send_value = !send_value;
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_recv_after_send() -> Result<(), Box<dyn std::error::Error>> {
+        setup_dirs();
+        let _ = progbase::try_init();
+        let _ = logger::init_combined_logger();
+
+        let mut slot = SlotImpl::<bool>::new(Base::new("slot", None));
+        let mut signal = SignalImpl::<bool>::new(Base::new("signal", None));
+        signal.init().await?;
+
+        slot.async_connect(signal.full_name().as_str())
+            .await
+            .expect("This should connect");
+
+        signal.send(true).await.expect("This should not fail");
+
+        let recv = tokio::time::timeout(tokio::time::Duration::from_secs(1), slot.recv()).await;
 
         let value = match recv {
             Ok(inner_result) => match inner_result {
