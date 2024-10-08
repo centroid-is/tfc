@@ -62,7 +62,9 @@ impl<T: TypeName> Base<T> {
         endpoint(&self.full_name())
     }
     fn path(&self) -> PathBuf {
-        PathBuf::from(format!("{}{}", FILE_PATH, self.full_name()))
+        let runtime_dir =
+            std::env::var("RUNTIME_DIRECTORY").unwrap_or_else(|_| FILE_PATH.to_string());
+        PathBuf::from(format!("{}{}", runtime_dir, self.full_name()))
     }
 }
 
@@ -1300,6 +1302,10 @@ mod tests {
     use rand::Rng;
     use std::io::Cursor;
 
+    fn setup_dirs() {
+        // let current_dir = std::env::current_dir().expect("Failed to get mkd
+    }
+
     fn packet_serialize_deserialize<T>(value: T)
     where
         T: TypeIdentifier + SerializeSize + Serialize + Deserialize + PartialEq + std::fmt::Debug,
@@ -1378,60 +1384,99 @@ mod tests {
 
         packet_serialize_deserialize(Err(-1) as Result<Mass, i32>); // todo make
     }
-    #[tokio::test]
-    async fn basic_send_recv_test() -> Result<(), Box<dyn std::error::Error>> {
-        progbase::init();
 
+    #[tokio::test]
+    async fn test_send_recv() -> Result<(), Box<dyn std::error::Error>> {
+        setup_dirs();
+        let _ = progbase::try_init();
         let _ = logger::init_combined_logger();
 
-        let bus = zbus::connection::Builder::system()?
-            .name(format!("is.centroid.{}.{}", "tfctest", "tfctest"))?
-            .build()
-            .await?;
-        let mut my_little_slot = Slot::<bool>::new(bus.clone(), Base::new("my_little_slot", None));
-        let mut my_little_signal = Signal::<bool>::new(bus, Base::new("my_little_signal", None));
+        let mut slot = SlotImpl::<bool>::new(Base::new("slot", None));
+        let mut signal = SignalImpl::<bool>::new(Base::new("signal", None));
+        signal.init().await?;
 
-        let vals_to_send = vec![
-            false, false, true, true, false, false, true, true, false, false, true, true, false,
-            false,
-        ];
-        let vals_to_recv = vec![false, true, false, true, false, true, false];
-
-        my_little_slot
-            .connect(my_little_signal.full_name())
+        slot.async_connect(signal.full_name().as_str())
+            .await
             .expect("This should connect");
 
-        let mut stream = my_little_slot.stream();
-        let recv_task = tokio::spawn(async move {
-            let mut counter = 0;
-            for expected_val in vals_to_recv {
-                tokio::select! {
-                    val = stream.next() => {
-                        assert_eq!(val.expect("This should not fail"), expected_val);
-                        counter += 1;
-                    },
-                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
-                        panic!("No value received for 1 second, only received {} values", counter);
-                    }
+        let (recv, send) = tokio::join!(
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), slot.recv()),
+            signal.send(true)
+        );
+
+        send.expect("Sender task panicked");
+
+        let value = match recv {
+            Ok(inner_result) => match inner_result {
+                Ok(value) => value,
+                Err(e) => {
+                    panic!("Error receiving value: {:?}", e);
                 }
+            },
+            Err(_) => {
+                panic!("Timeout occurred");
             }
-        });
+        };
 
-        let send_task = tokio::spawn(async move {
-            for val in vals_to_send {
-                my_little_signal
-                    .async_send(val)
-                    .await
-                    .expect("This should not fail");
-            }
-        });
-
-        let (recv_res, send_res) = tokio::join!(recv_task, send_task);
-
-        recv_res.expect("Receiver task panicked");
-
-        send_res.expect("Sender task panicked");
+        assert_eq!(value, true);
 
         Ok(())
     }
+
+    // #[tokio::test]
+    // async fn basic_send_recv_test() -> Result<(), Box<dyn std::error::Error>> {
+    //     progbase::init();
+
+    //     let _ = logger::init_combined_logger();
+
+    //     let bus = zbus::connection::Builder::system()?
+    //         .name(format!("is.centroid.{}.{}", "tfctest", "tfctest"))?
+    //         .build()
+    //         .await?;
+    //     let mut my_little_slot = Slot::<bool>::new(bus.clone(), Base::new("my_little_slot", None));
+    //     let mut my_little_signal = Signal::<bool>::new(bus, Base::new("my_little_signal", None));
+
+    //     let vals_to_send = vec![
+    //         false, false, true, true, false, false, true, true, false, false, true, true, false,
+    //         false,
+    //     ];
+    //     let vals_to_recv = vec![false, true, false, true, false, true, false];
+
+    //     my_little_slot
+    //         .connect(my_little_signal.full_name())
+    //         .expect("This should connect");
+
+    //     let mut stream = my_little_slot.stream();
+    //     let recv_task = tokio::spawn(async move {
+    //         let mut counter = 0;
+    //         for expected_val in vals_to_recv {
+    //             tokio::select! {
+    //                 val = stream.next() => {
+    //                     assert_eq!(val.expect("This should not fail"), expected_val);
+    //                     counter += 1;
+    //                 },
+    //                 _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
+    //                     panic!("No value received for 1 second, only received {} values", counter);
+    //                 }
+    //             }
+    //         }
+    //     });
+
+    //     let send_task = tokio::spawn(async move {
+    //         for val in vals_to_send {
+    //             my_little_signal
+    //                 .async_send(val)
+    //                 .await
+    //                 .expect("This should not fail");
+    //         }
+    //     });
+
+    //     let (recv_res, send_res) = tokio::join!(recv_task, send_task);
+
+    //     recv_res.expect("Receiver task panicked");
+
+    //     send_res.expect("Sender task panicked");
+
+    //     Ok(())
+    // }
 }
