@@ -4,4 +4,5 @@ pub mod logger;
 pub mod progbase;
 
 mod filter;
-mod ipc_ruler_client;
+pub mod ipc_ruler_client;
+pub mod banner;

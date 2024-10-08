@@ -37,7 +37,7 @@ trait IpcRuler {
     default_service = "is.centroid.ipc_ruler",
     default_path = "/is/centroid/ipc_ruler"
 )]
-trait IpcRuler {
+pub trait IpcRuler {
     #[zbus(property)]
     fn connections(&self) -> zbus::fdo::Result<String>;
 
