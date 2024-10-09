@@ -1627,6 +1627,73 @@ mod tests {
         recv_res.expect("Receiver task panicked");
         Ok(())
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_public_recv_after_send() -> Result<(), Box<dyn std::error::Error>> {
+        setup_dirs();
+        let _ = progbase::try_init();
+        let _ = logger::init_combined_logger();
+
+        let bus = zbus::connection::Builder::system()?
+            .name(format!("is.centroid.{}.{}", "tfctest3", "tfctest3"))?
+            .build()
+            .await?;
+
+        let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot6", None));
+        let mut signal = Signal::<bool>::new(bus.clone(), Base::new("signal6", None));
+        signal.init_task().await?;
+
+        slot.async_connect(signal.full_name())
+            .await
+            .expect("This should connect");
+
+        signal.async_send(true).await.expect("This should not fail");
+
+        let recv =
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), slot.async_recv()).await;
+
+        let value = match recv {
+            Ok(inner_result) => match inner_result {
+                Ok(value) => value,
+                Err(e) => {
+                    panic!("Error receiving value: {:?}", e);
+                }
+            },
+            Err(_) => {
+                panic!("Timeout occurred");
+            }
+        };
+
+        assert_eq!(value.lock().unwrap(), true);
+
+        Ok(())
+    }
+    #[tokio::test]
+    async fn initialize_button() {
+        let bus = zbus::connection::Builder::system()
+            .expect("Build a bus")
+            .build()
+            .await
+            .expect("Build success");
+        let mut slot = Slot::<bool>::new(bus.clone(), Base::new("test_slot", None));
+        let mut signal = Signal::<bool>::new(bus, Base::new("test_signal", None));
+
+        // Connect them together
+        slot.connect(signal.full_name()).expect("Connect success");
+        //tokio::time::sleep(Duration::from_millis(1000)).await;
+
+        // Send some values and check they are correct
+        // Send true value
+        signal.async_send(true).await.expect("Send success");
+        let value =
+            (*slot.async_recv().await.expect("Have some value").lock()).expect("Got some value");
+        assert_eq!(value, true);
+
+        // Send false value
+        signal.async_send(false).await.expect("Send success");
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        assert_eq!(slot.value().expect("Has value"), false);
+    }
     // #[tokio::test]
     // async fn basic_send_recv_test() -> Result<(), Box<dyn std::error::Error>> {
     //     progbase::init();
