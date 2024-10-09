@@ -681,6 +681,7 @@ pub struct Signal<T: TypeName> {
     bus: zbus::Connection,
     #[allow(dead_code)]
     log_key: String,
+    init_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl<T> Signal<T>
@@ -718,8 +719,11 @@ where
 
         let name = base.full_name();
         let description = base.description.clone().unwrap_or(String::new());
-        tokio::spawn(async move {
+
+        let init_task = tokio::spawn(async move {
             let _ = signal_cp.lock().init().await;
+        });
+        tokio::spawn(async move {
             let _ = bus_cp
                 .object_server()
                 .at(dbus_path_cp, client)
@@ -750,7 +754,16 @@ where
             dbus_path: Arc::new(Mutex::new(dbus_path)),
             bus,
             log_key,
+            init_task: Some(init_task),
         }
+    }
+
+    // Use to wait for the constructor to finish
+    pub async fn init_task(&mut self) -> Result<(), tokio::task::JoinError> {
+        self.init_task
+            .take()
+            .expect("Init task has not been started")
+            .await
     }
 
     async fn async_send_impl(
@@ -1529,21 +1542,82 @@ mod tests {
             .expect("This should connect");
 
         let send_values = vec![
-            true, false, true, false, true, false, true, false, true, false,
+            true, true, false, false, true, true, false, false, true, true, false, false, true,
+            true, false, false,
         ];
-        let send_values_cp = send_values.clone();
+        let recv_values = vec![
+            true, true, false, false, true, true, false, false, true, true, false, false, true,
+            true, false, false,
+        ];
         let send_task = tokio::spawn(async move {
             // This sleep makes sure that the receiver has already started and is listening before sending
             tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-            for val in send_values_cp {
+            for val in send_values {
                 signal.send(val).await.expect("This should not fail");
             }
         });
 
         let recv_task = tokio::spawn(async move {
-            for val in send_values {
+            for val in recv_values {
                 let recv_val = slot.recv().await.expect("This should not fail");
                 assert_eq!(recv_val, val);
+            }
+        });
+
+        let (recv_res, send_res) = tokio::join!(recv_task, send_task);
+
+        send_res.expect("Sender task panicked");
+        recv_res.expect("Receiver task panicked");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_public_async_send_recv() -> Result<(), Box<dyn std::error::Error>> {
+        setup_dirs();
+        let _ = progbase::try_init();
+        let _ = logger::init_test_logger();
+        let bus = zbus::connection::Builder::system()?
+            .name(format!("is.centroid.{}.{}", "tfctest2", "tfctest2"))?
+            .build()
+            .await?;
+
+        let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot5", None));
+        let mut signal = Signal::<bool>::new(bus.clone(), Base::new("signal5", None));
+        log::info!("Waiting for init");
+        signal.init_task().await?;
+        log::info!("Init complete");
+
+        log::info!("Connecting");
+        slot.async_connect(signal.full_name())
+            .await
+            .expect("This should connect");
+        log::info!("Connected");
+        let send_values = vec![
+            true, true, false, false, true, true, false, false, true, true, false, false, true,
+            true, false, false,
+        ];
+        let recv_values = vec![
+            true, true, false, false, true, true, false, false, true, true, false, false, true,
+            true, false, false,
+        ];
+        let send_task = tokio::spawn(async move {
+            // This sleep makes sure that the receiver has already started and is listening before sending
+            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+            for val in send_values {
+                signal.async_send(val).await.expect("This should not fail");
+            }
+        });
+
+        let recv_task = tokio::spawn(async move {
+            for val in recv_values {
+                let recv_val = slot.async_recv().await;
+                // filtered out values are Errors, newstate filter
+                // the recv_values vector contains all values with filtered out values removed
+                if let Ok(recv_val) = recv_val {
+                    assert_eq!(recv_val.lock().unwrap(), val);
+                } else {
+                    assert_eq!(recv_val.err().unwrap().to_string(), "Same as last value");
+                }
             }
         });
 

@@ -44,6 +44,15 @@ impl Log for CombinedLogger {
     }
 }
 
+pub fn init_test_logger() -> Result<(), SetLoggerError> {
+    let env_logger: env_logger::Logger = env_logger::Builder::from_env(env_logger::Env::default())
+        .filter_level(log::LevelFilter::Trace)
+        .build();
+    log::set_boxed_logger(Box::new(env_logger))
+        .map(|()| log::set_max_level(log::LevelFilter::Trace))?;
+    Ok(())
+}
+
 pub fn init_combined_logger() -> Result<(), SetLoggerError> {
     INIT.call_once(|| {
         let env_logger: env_logger::Logger =
