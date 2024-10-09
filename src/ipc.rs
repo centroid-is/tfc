@@ -1514,6 +1514,45 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_async_send_recv() -> Result<(), Box<dyn std::error::Error>> {
+        setup_dirs();
+        let _ = progbase::try_init();
+        let _ = logger::init_combined_logger();
+
+        let mut slot = SlotImpl::<bool>::new(Base::new("slot4", None));
+        let mut signal = SignalImpl::<bool>::new(Base::new("signal4", None));
+        signal.init().await?;
+
+        slot.async_connect(signal.full_name().as_str())
+            .await
+            .expect("This should connect");
+
+        let send_values = vec![
+            true, false, true, false, true, false, true, false, true, false,
+        ];
+        let send_values_cp = send_values.clone();
+        let send_task = tokio::spawn(async move {
+            // This sleep makes sure that the receiver has already started and is listening before sending
+            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+            for val in send_values_cp {
+                signal.send(val).await.expect("This should not fail");
+            }
+        });
+
+        let recv_task = tokio::spawn(async move {
+            for val in send_values {
+                let recv_val = slot.recv().await.expect("This should not fail");
+                assert_eq!(recv_val, val);
+            }
+        });
+
+        let (recv_res, send_res) = tokio::join!(recv_task, send_task);
+
+        send_res.expect("Sender task panicked");
+        recv_res.expect("Receiver task panicked");
+        Ok(())
+    }
     // #[tokio::test]
     // async fn basic_send_recv_test() -> Result<(), Box<dyn std::error::Error>> {
     //     progbase::init();
