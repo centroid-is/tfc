@@ -24,7 +24,7 @@ serde = { version = "1.0.206", features = ["derive"] }
 zbus = "4.4.0"
 serde_json = "1.0.124"
 tokio = { version = "1.39.2", features = ["rt-multi-thread", "macros"] }
-zeromq = { version = "0.4.0", default-features = false, features = [
+zeromq = { git = "https://github.com/zeromq/zmq.rs.git", commit="1334d257ee4ddb73c379bfa667a8e0cfa8cc55d9", default-features = false, features = [
     "tokio-runtime",
     "ipc-transport",
 ] }

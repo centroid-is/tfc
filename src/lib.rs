@@ -5,5 +5,6 @@ pub mod ipc_ruler_client;
 pub mod logger;
 pub mod progbase;
 pub mod time;
+pub mod button; 
 
 mod filter;
