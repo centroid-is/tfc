@@ -105,10 +105,4 @@ impl Stream for Button {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    
-    #[tokio::test]
-    async fn initialize_button(){
-        todo!("Test");
-    }
 }
