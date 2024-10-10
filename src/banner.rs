@@ -15,7 +15,6 @@
 
 pub mod banner {
     use core::fmt;
-    use std::path::Display;
 
 pub enum Colors {
     None = 0,
@@ -54,7 +53,7 @@ mod tests {
     use super::banner::*;
     #[test]
     fn test_all_states() {
-        let (mut i1, mut i2, mut i3) = (false, false, false);
+        let (mut i1, mut i2, mut i3);
         (i1, i2, i3) = color_to_states(Colors::None);
         assert_eq!(i1, false);
         assert_eq!(i2, false);
