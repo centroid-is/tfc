@@ -418,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch() {
-        let (tx, mut rx) = async_watch::channel(0);
+        let (tx, mut rx) = tokio::sync::watch::channel(0);
 
         let mut rx2 = rx.clone();
         let mut rx3 = rx.clone();

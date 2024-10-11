@@ -1,8 +1,15 @@
 use core::fmt;
+use futures::{
+    task::{Context, Poll},
+    Stream,
+};
+use std::{
+    pin::Pin,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::sync::Mutex as TMutex;
 use tokio::time::timeout;
-use std::{sync::{Mutex, Arc}, pin::Pin, time::Duration};
-use futures::{Stream, task::{Poll, Context}};
 
 use crate::ipc::Slot;
 
@@ -11,7 +18,7 @@ use crate::ipc::Slot;
 pub enum ButtonEvent {
     Tap,
     DoubleTap,
-    LongTap
+    LongTap,
 }
 
 impl fmt::Display for ButtonEvent {
@@ -24,7 +31,6 @@ impl fmt::Display for ButtonEvent {
     }
 }
 
-
 pub struct Button {
     slot: Arc<TMutex<Slot<bool>>>,
     ready: Arc<Mutex<Option<ButtonEvent>>>,
@@ -32,7 +38,10 @@ pub struct Button {
 
 impl Button {
     pub fn new(slot: Slot<bool>) -> Self {
-        Button { slot: Arc::new(TMutex::new(slot)), ready: Arc::new(Mutex::new(None)) }
+        Button {
+            slot: Arc::new(TMutex::new(slot)),
+            ready: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
@@ -55,7 +64,7 @@ impl Stream for Button {
                     // First event in sequence, wait until that value is true to start the sequence
                     let mut value = false;
                     while value == false {
-                        value = s.async_recv().await.expect("Got some value").lock().unwrap().clone();
+                        value = s.async_recv().await.expect("Got some value").unwrap();
                     }
                     // Now that someone has actuated the button there are three choices
                     // 1. The button is held long enough to become a long press
@@ -77,13 +86,13 @@ impl Stream for Button {
                                     let mut r = ready.lock().unwrap();
                                     *r = Some(ButtonEvent::DoubleTap);
                                     waker.wake();
-                                },
+                                }
                                 Err(_) => {
                                     // No other event occured after our inital true-false sequence. This was a tap
                                     let mut r = ready.lock().unwrap();
                                     *r = Some(ButtonEvent::Tap);
                                     waker.wake();
-                                },
+                                }
                             }
                         }
                         Err(_) => {
@@ -104,5 +113,4 @@ impl Stream for Button {
 }
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}

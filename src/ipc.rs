@@ -305,6 +305,27 @@ where
         self.new_value_signal.subscribe()
     }
 
+    // return tuple of watch recv and send
+    pub fn partner_coms(
+        &self,
+        name: String,
+    ) -> (watch::Sender<Option<T>>, watch::Receiver<Option<T>>) {
+        let (tx, mut rx) = watch::channel(None as Option<T>);
+        let log_key = self.log_key.clone();
+        let self_tx = self.new_value_signal.clone();
+        tokio::spawn(async move {
+            loop {
+                rx.changed().await;
+                let value = rx.borrow().clone();
+                trace!(target: &log_key, "Changed {} value to {:?}", name, value); // OPC-UA Changed Temperature value to 10
+                                                                                   // DBUS-Tinker Changed Temperature value to -1
+                                                                                   // Override current slot value with tinkered value.
+                self_tx.send(value);
+            }
+        });
+        (tx, self.new_value_signal.subscribe())
+    }
+
     pub fn recv(&mut self, callback: Box<dyn Fn(&T) + Send + Sync>)
     where
         <T as AnyFilterDecl>::Type: Send + Sync + Filter<T>,
