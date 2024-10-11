@@ -29,7 +29,6 @@ trait IpcRuler {
     fn connection_change(&self, slot_name: &str, signal_name: &str) -> fdo::Result<()>;
 }
 
-
 #[cfg(not(feature = "s3x-legacy-naming"))]
 #[proxy(
     gen_async = true,

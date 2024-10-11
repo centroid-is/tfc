@@ -216,7 +216,6 @@ where
         + 'static,
 {
     filters: ConfMan<Vec<<T as AnyFilterDecl>::Type>>,
-    last_value: Arc<Mutex<Option<T>>>,
 }
 
 impl<T> Filters<T>
@@ -231,25 +230,26 @@ where
         + Sync
         + 'static,
 {
-    pub fn new(bus: zbus::Connection, key: &str, last_value: Arc<Mutex<Option<T>>>) -> Self
+    pub fn new(bus: zbus::Connection, key: &str) -> Self
     where
         <T as AnyFilterDecl>::Type:
             Send + Sync + Serialize + for<'de> Deserialize<'de> + JsonSchema,
     {
         Filters {
             filters: ConfMan::new(bus, key).with_default(<T as AnyFilterDecl>::default_filters()),
-            last_value,
         }
     }
-    pub async fn process(&self, new_value: T) -> Result<T, Box<dyn Error + Send + Sync>> {
-        let old_value = self.last_value.lock();
-        let old_value = old_value.as_ref();
+    pub async fn process(
+        &self,
+        new_value: T,
+        old_value: &Option<T>,
+    ) -> Result<T, Box<dyn Error + Send + Sync>> {
         let mut result: Result<T, Box<dyn Error + Send + Sync>> = Ok(new_value);
         for filter in self.filters.read().iter() {
             if result.is_err() {
                 break;
             }
-            result = filter.filter(result?, old_value).await;
+            result = filter.filter(result?, old_value.as_ref()).await;
         }
         result
     }

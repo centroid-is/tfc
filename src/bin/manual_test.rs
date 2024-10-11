@@ -86,12 +86,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = i64_slot_stream.connect(i64_signal.full_name());
     println!("Slot connected");
 
-    let mut stream = i64_slot_stream.stream();
+    let mut stream = i64_slot_stream.watch();
     tokio::spawn(async move {
         loop {
             println!("awaiting new stream val");
-            let val = stream.next().await;
-            println!("Stream val: {:?}", val);
+            let val = stream.changed().await;
+            println!(
+                "Watch val: {:?}, val: {:?}",
+                val,
+                stream.borrow_and_update()
+            );
         }
     });
 

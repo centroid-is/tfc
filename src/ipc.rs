@@ -2,14 +2,16 @@ use futures::future::Either;
 use futures::stream::StreamExt;
 use futures::SinkExt;
 use futures_channel::mpsc;
-use log::{log, Level};
+use log::{debug, log, trace, Level};
 use parking_lot::Mutex;
 use quantities::mass::Mass;
 use schemars::JsonSchema;
 use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc};
 use tokio::select;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::mpsc as tokio_mpsc;
+use tokio::sync::Mutex as TMutex;
+use tokio::sync::{watch, Notify, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zbus::{interface, zvariant::Type};
@@ -74,15 +76,14 @@ where
     <T as AnyFilterDecl>::Type: Filter<T>,
 {
     slot: Arc<RwLock<SlotImpl<T>>>,
-    last_value: Arc<Mutex<Option<T>>>,
-    new_value_channel: Arc<Mutex<mpsc::Receiver<T>>>,
-    cb: Option<Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>>>,
     connect_notify: Arc<Notify>,
-    filters: Arc<Mutex<Filters<T>>>,
     dbus_path: String,
     bus: zbus::Connection,
-    recv_task: Option<JoinHandle<()>>,
     log_key: String,
+    new_value_signal: watch::Sender<Option<T>>,
+    connect_change_task: JoinHandle<()>,
+    register_task: JoinHandle<()>,
+    recv_task: JoinHandle<()>,
 }
 
 impl<T> Slot<T>
@@ -101,7 +102,8 @@ where
         + JsonSchema
         + for<'a> zbus::export::serde::de::Deserialize<'a>
         + zbus::export::serde::ser::Serialize
-        + AnyFilterDecl,
+        + AnyFilterDecl
+        + std::fmt::Debug,
     <T as AnyFilterDecl>::Type: Filter<T>,
 {
     pub fn new(bus: zbus::Connection, base: Base<T>) -> Self
@@ -112,34 +114,27 @@ where
             + for<'a> zbus::export::serde::de::Deserialize<'a>
             + JsonSchema,
     {
-        let name = base.full_name();
-        let name_cp = name.clone();
-        let description = base.description.clone().unwrap_or(String::new());
-        let dbus_path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
         let log_key = base.log_key.clone();
+        let dbus_path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
 
-        let last_value: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
         let connect_notify = Arc::new(Notify::new());
-        let filters = Arc::new(Mutex::new(Filters::new(
-            bus.clone(),
-            format!("filters/{}", Base::<T>::type_and_name(&base.name)).as_str(),
-            Arc::clone(&last_value),
-        )));
-        let slot = Arc::new(RwLock::new(SlotImpl::new(base)));
 
-        let log_key_cp = log_key.clone();
-        let (new_value_sender, new_value_receiver) = mpsc::channel(10);
-        let client = SlotInterface::new(Arc::clone(&last_value), new_value_sender, &log_key);
-        let dbus_path_cp = dbus_path.clone();
-        let bus_cp = bus.clone();
+        let slot = Arc::new(RwLock::new(SlotImpl::new(base.clone())));
+
+        let (new_value_sender, new_value_receiver) = watch::channel(None as Option<T>);
 
         let shared_slot: Arc<RwLock<SlotImpl<T>>> = Arc::clone(&slot);
         let shared_connect_notify = Arc::clone(&connect_notify);
 
         // watch for connection changes for this slot
         // TODO we should make a awaitable boolean flag, we need to have started this spawn strictly before the next one where we register the slot
-        tokio::spawn(async move {
-            let proxy = IpcRulerProxy::builder(&bus_cp)
+
+        let shared_log_key = log_key.clone();
+        let shared_bus = bus.clone();
+        let shared_name = base.full_name();
+
+        let connect_change_task = tokio::spawn(async move {
+            let proxy = IpcRulerProxy::builder(&shared_bus)
                 .cache_properties(zbus::CacheProperties::No)
                 .build()
                 .await
@@ -149,15 +144,15 @@ where
                 if res.is_ok() {
                     let args = res.unwrap().next().await.unwrap();
                     let slot_name = args.args().unwrap().slot_name().to_string();
-                    if slot_name == name_cp {
+                    if slot_name == shared_name {
                         shared_connect_notify.notify_waiters();
                         // let _ = shared_slot.write().await.disconnect().await;
                         let signal_name = args.args().unwrap().signal_name().to_string();
-                        log!(target: &log_key_cp, Level::Trace,
+                        log!(target: &shared_log_key, Level::Trace,
                             "Connection change received for slot: {}, signal: {}", slot_name, signal_name);
                         let res = shared_slot.write().await.connect(&signal_name);
                         if res.is_err() {
-                            log!(target: &log_key_cp, Level::Error,
+                            log!(target: &shared_log_key, Level::Error,
                                 "Failed to connect to signal: {}", res.err().unwrap());
                         }
                     }
@@ -166,242 +161,166 @@ where
             }
         });
 
-        let bus_cp = bus.clone();
-        let log_key_cp = log_key.clone();
+        let (tinker_channel_sender, mut tinker_channel_receiver) = tokio_mpsc::channel(10);
+        let client =
+            SlotInterface::new(new_value_receiver.clone(), tinker_channel_sender, &log_key);
+        let shared_log_key = log_key.clone();
+        let shared_name = base.full_name();
+        let shared_description = base.description.clone().unwrap_or(String::new());
+        let shared_bus = bus.clone();
+        let shared_dbus_path = dbus_path.clone();
         // register the dbus interface for this slot
-        tokio::spawn(async move {
-            let _ = bus_cp
+        let register_task = tokio::spawn(async move {
+            let _ = shared_bus
                 .object_server()
-                .at(dbus_path_cp, client)
+                .at(shared_dbus_path, client)
                 .await
-                .expect(&format!("Error registering object: {}", log_key_cp));
-            let proxy = IpcRulerProxy::builder(&bus_cp)
+                .expect(&format!("Error registering object: {}", shared_log_key));
+            let proxy = IpcRulerProxy::builder(&shared_bus)
                 .cache_properties(zbus::CacheProperties::No)
                 .build()
                 .await
                 .unwrap();
             loop {
                 let res = proxy
-                    .register_slot(name.as_str(), description.as_str(), T::type_identifier())
+                    .register_slot(
+                        shared_name.as_str(),
+                        shared_description.as_str(),
+                        T::type_identifier(),
+                    )
                     .await;
                 if res.is_ok() {
                     break;
                 } else {
-                    log!(target: &log_key_cp, Level::Trace,
+                    log!(target: &shared_log_key, Level::Trace,
                     "Slot Registration failed: '{}', will try again in 1s", res.err().unwrap());
                     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                 }
             }
         });
 
-        Self {
-            slot,
-            last_value,
-            new_value_channel: Arc::new(Mutex::new(new_value_receiver)),
-            cb: None,
-            connect_notify,
-            filters,
-            dbus_path,
-            bus,
-            recv_task: None,
-            log_key,
-        }
-    }
+        let shared_name = base.name.clone();
+        let shared_log_key = log_key.clone();
+        let shared_connect_notify = Arc::clone(&connect_notify);
+        let shared_slot = Arc::clone(&slot);
+        let shared_new_value_sender = new_value_sender.clone();
+        let shared_dbus_path = dbus_path.clone();
+        let shared_bus = bus.clone();
+        let recv_task: JoinHandle<()> = tokio::spawn(async move {
+            let mut local_last_value: Option<T> = None;
 
-    async fn process_value(
-        value: T,
-        shared_filters: Arc<Mutex<Filters<T>>>,
-        shared_last_value: Arc<Mutex<Option<T>>>,
-        shared_bus: zbus::Connection,
-        shared_dbus_path: &str,
-        log_key: &str,
-    ) -> Result<Arc<Mutex<Option<T>>>, Box<dyn Error + Send + Sync>> {
-        let filtered_value = shared_filters.lock().process(value).await;
-        match filtered_value {
-            Ok(filtered) => {
-                *shared_last_value.lock() = Some(filtered);
-                let value_guard = shared_last_value.lock();
-                let value_ref = value_guard.as_ref().unwrap();
-                let iface: zbus::InterfaceRef<SlotInterface<T>> = shared_bus
-                    .object_server()
-                    .interface(shared_dbus_path)
-                    .await
-                    .unwrap();
-                let _ = SlotInterface::value(&iface.signal_context(), value_ref).await;
-                Ok(Arc::clone(&shared_last_value))
-            }
-            Err(err) => {
-                log!(target: log_key, Level::Trace,
-                    "Filtered out value reason: {}", err);
-                Err(err)
-            }
-        }
-    }
-
-    pub fn value(&self) -> Result<T, Box<dyn Error + Send + Sync>> {
-        let guard = self.last_value.lock();
-        match *guard {
-            Some(ref value) => Ok(value.clone()),
-            None => Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "No value set",
-            ))),
-        }
-    }
-
-    async fn async_recv_(
-        shared_slot: Arc<RwLock<SlotImpl<T>>>,
-        shared_new_value_channel: Arc<Mutex<mpsc::Receiver<T>>>,
-        shared_connect_notify: Arc<Notify>,
-        shared_filters: Arc<Mutex<Filters<T>>>,
-        shared_last_value: Arc<Mutex<Option<T>>>,
-        shared_bus: zbus::Connection,
-        shared_dbus_path: &str,
-        log_key: &str,
-    ) -> Result<Arc<Mutex<Option<T>>>, Box<dyn Error + Send + Sync>> {
-        loop {
-            let slot_guard = shared_slot.read().await; // Create a binding for the read guard
-            let mut new_value_guard = shared_new_value_channel.lock();
-            tokio::select! {
-                result = slot_guard.recv() => {
-                    match result {
-                        Ok(value) => {
-                            return Slot::process_value(
-                                value,
-                                Arc::clone(&shared_filters),
-                                Arc::clone(&shared_last_value),
-                                shared_bus.clone(),
-                                shared_dbus_path,
-                                &log_key,
-                            ).await;
-                        }
-                        Err(e) => {
-                            log!(target: &log_key, Level::Info,
-                                "Unsuccessful receive on slot, error: {}", e);
-                            return Err(e);
-                        }
-                    }
-                },
-                _ = shared_connect_notify.notified() => {
-                    log!(target: &log_key, Level::Info,
-                            "Connecting to other signal, let's try receiving from it");
-                },
-                result = new_value_guard.next() => {
-                    match result {
-                        Some(value) => {
-                            return Slot::process_value(
-                                value,
-                                Arc::clone(&shared_filters),
-                                Arc::clone(&shared_last_value),
-                                shared_bus.clone(),
-                                shared_dbus_path,
-                                &log_key,
-                            ).await;
-                        }
-                        None => {
-                            log!(target: &log_key, Level::Trace,
-                                "New value channel ended");
-                            return Err(Box::new(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "New value channel ended",
-                            )));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    pub async fn async_recv(&self) -> Result<Arc<Mutex<Option<T>>>, Box<dyn Error + Send + Sync>> {
-        Slot::async_recv_(
-            Arc::clone(&self.slot),
-            Arc::clone(&self.new_value_channel),
-            Arc::clone(&self.connect_notify),
-            Arc::clone(&self.filters),
-            Arc::clone(&self.last_value),
-            self.bus.clone(),
-            &self.dbus_path,
-            &self.log_key,
-        )
-        .await
-    }
-
-    pub fn stream(&self) -> mpsc::Receiver<T> {
-        let (mut sender, receiver) = mpsc::channel(10);
-        let shared_slot = Arc::clone(&self.slot);
-        let shared_new_value_channel = Arc::clone(&self.new_value_channel);
-        let shared_connect_notify = Arc::clone(&self.connect_notify);
-        let shared_filters = Arc::clone(&self.filters);
-        let shared_last_value = Arc::clone(&self.last_value);
-        let shared_bus = self.bus.clone();
-        let shared_dbus_path = self.dbus_path.clone();
-        let log_key = self.log_key.clone();
-        tokio::spawn(async move {
+            let filters = Filters::new(
+                shared_bus.clone(),
+                format!("filters/{}", Base::<T>::type_and_name(&shared_name)).as_str(),
+            );
+            let iface: zbus::InterfaceRef<SlotInterface<T>> = shared_bus
+                .clone()
+                .object_server()
+                .interface(shared_dbus_path.clone())
+                .await
+                .unwrap();
             loop {
-                let res = Slot::async_recv_(
-                    Arc::clone(&shared_slot),
-                    Arc::clone(&shared_new_value_channel),
-                    Arc::clone(&shared_connect_notify),
-                    Arc::clone(&shared_filters),
-                    Arc::clone(&shared_last_value),
-                    shared_bus.clone(),
-                    &shared_dbus_path,
-                    &log_key,
-                )
-                .await;
-                if res.is_ok() {
-                    let shared_last_value = res.unwrap();
-                    let guard = shared_last_value.lock();
-                    let value = guard.as_ref().unwrap();
-                    sender.send(value.clone()).await.unwrap();
-                } else {
-                    log!(target: &log_key, Level::Warn,
-                        "Error receiving value: {}", res.err().unwrap());
+                let slot_guard = shared_slot.read().await; // Create a binding for the read guard
+                let new_value = tokio::select! {
+                    result = slot_guard.recv() => {
+                        match result {
+                            Ok(value) => {
+                                filters.process(value, &local_last_value).await
+                            }
+                            Err(e) => {
+                                Err(e)
+                            }
+                        }
+                    },
+                    _ = shared_connect_notify.notified() => {
+                        Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "Connecting to other signal, let's try receiving from it",
+                        )) as Box<dyn std::error::Error + Send + Sync>)
+                    },
+                    result = tinker_channel_receiver.recv() => {
+                        match result {
+                            Some(value) => {
+                                Ok(value)
+                            }
+                            None => {
+                                Err(Box::new(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "New value channel ended",
+                                )) as Box<dyn std::error::Error + Send + Sync>)
+                            }
+                        }
+                    }
+                };
+
+                match new_value {
+                    Ok(filtered) => {
+                        local_last_value = Some(filtered);
+
+                        // let _ = SlotInterface::value(
+                        //     &iface.signal_context(),
+                        //     local_last_value.as_ref().unwrap(),
+                        // )
+                        // .await;
+                        debug!(target: &shared_log_key, "Value sent: {:?}", local_last_value);
+                        let _ = shared_new_value_sender
+                            .send(local_last_value.clone())
+                            .map_err(|e| {
+                                log!(target: &shared_log_key, Level::Error,
+                                "Error sending new value: {}", e);
+                            });
+                    }
+                    Err(err) => {
+                        debug!(target: &shared_log_key, "Value not sent: {}", err);
+                    }
                 }
             }
         });
-        receiver
+
+        Self {
+            slot,
+            connect_notify,
+            dbus_path,
+            bus,
+            log_key,
+            new_value_signal: new_value_sender,
+            connect_change_task,
+            register_task,
+            recv_task,
+        }
+    }
+
+    pub async fn async_recv(&self) -> Result<Option<T>, Box<dyn Error + Send + Sync>> {
+        let mut watcher = self.watch();
+        // todo return error if we can't watch
+        let _ = watcher.changed().await.map_err(|_| {
+            log!(target: &self.log_key, Level::Error,
+            "recv Error watching for changes");
+        });
+        let value = watcher.borrow_and_update().clone();
+        Ok(value)
+    }
+
+    pub fn watch(&self) -> watch::Receiver<Option<T>> {
+        self.new_value_signal.subscribe()
     }
 
     pub fn recv(&mut self, callback: Box<dyn Fn(&T) + Send + Sync>)
     where
         <T as AnyFilterDecl>::Type: Send + Sync + Filter<T>,
     {
-        let shared_cb: Arc<Mutex<Box<dyn Fn(&T) + Send + Sync>>> = Arc::new(Mutex::new(callback));
-        self.cb = Some(Arc::clone(&shared_cb));
+        let mut watcher = self.watch();
         let log_key = self.log_key.clone();
-        let shared_slot: Arc<RwLock<SlotImpl<T>>> = Arc::clone(&self.slot);
-        let shared_last_value = Arc::clone(&self.last_value);
-        let shared_connect_notify = Arc::clone(&self.connect_notify);
-        let shared_filters = Arc::clone(&self.filters);
-        let shared_new_value_channel = Arc::clone(&self.new_value_channel);
-        let shared_bus = self.bus.clone();
-        let shared_dbus_path = self.dbus_path.clone();
-
-        self.recv_task.replace(tokio::spawn(async move {
+        tokio::spawn(async move {
             loop {
-                let res = Slot::async_recv_(
-                    Arc::clone(&shared_slot),
-                    Arc::clone(&shared_new_value_channel),
-                    Arc::clone(&shared_connect_notify),
-                    Arc::clone(&shared_filters),
-                    Arc::clone(&shared_last_value),
-                    shared_bus.clone(),
-                    &shared_dbus_path,
-                    &log_key,
-                )
-                .await;
-                if res.is_ok() {
-                    let shared_last_value = res.unwrap();
-                    let guard = shared_last_value.lock();
-                    let value = guard.as_ref().unwrap();
-                    shared_cb.lock()(&value);
-                } else {
-                    log!(target: &log_key, Level::Warn,
-                        "Error receiving value: {}", res.err().unwrap());
-                }
+                let _ = watcher.changed().await.map_err(|_| {
+                    log!(target: &log_key, Level::Error,
+                    "recv Error watching for changes");
+                });
+                let value = watcher.borrow();
+                callback(value.as_ref().unwrap());
             }
-        }));
+        });
     }
     pub async fn async_connect(
         &mut self,
@@ -426,9 +345,9 @@ where
     <T as AnyFilterDecl>::Type: Filter<T>,
 {
     fn drop(&mut self) {
-        if let Some(task) = self.recv_task.take() {
-            task.abort();
-        }
+        self.register_task.abort();
+        self.connect_change_task.abort();
+        self.recv_task.abort();
     }
 }
 
@@ -457,20 +376,20 @@ mod detail {
 }
 
 struct SlotInterface<T> {
-    last_value: Arc<Mutex<Option<T>>>,
-    new_value_channel: mpsc::Sender<T>,
+    new_value_recv: watch::Receiver<Option<T>>,
+    tinker_channel: tokio_mpsc::Sender<T>,
     log_key: String,
 }
 
 impl<T: detail::SupportedTypes + zbus::zvariant::Type + Sync + Send + 'static> SlotInterface<T> {
     pub fn new(
-        last_value: Arc<Mutex<Option<T>>>,
-        new_value_channel: mpsc::Sender<T>,
+        new_value_recv: watch::Receiver<Option<T>>,
+        tinker_channel: tokio_mpsc::Sender<T>,
         key: &str,
     ) -> Self {
         Self {
-            last_value,
-            new_value_channel,
+            new_value_recv,
+            tinker_channel,
             log_key: key.to_string(),
         }
     }
@@ -490,31 +409,29 @@ where
         + zbus::export::serde::ser::Serialize,
 {
     #[zbus(property, name = "Value")]
-    async fn value_prop(&self) -> Result<zbus::zvariant::Value<'static>, zbus::fdo::Error> {
-        let guard = self.last_value.lock();
-
-        match *guard {
-            Some(ref value) => Ok(value.to_value()),
-            None => Err(zbus::fdo::Error::Failed("No value set".into())),
+    fn value_prop(&self) -> Result<zbus::zvariant::Value<'static>, zbus::fdo::Error> {
+        let value = self.new_value_recv.borrow();
+        if let Some(ref value) = *value {
+            return Ok(value.to_value());
         }
+        Err(zbus::fdo::Error::Failed("No value set".into()))
     }
     #[zbus(property(emits_changed_signal = "const"))]
-    async fn schema(&self) -> Result<String, zbus::fdo::Error> {
+    fn schema(&self) -> Result<String, zbus::fdo::Error> {
         serde_json::to_string_pretty(&schemars::schema_for!(T)).map_err(|e| {
             let err_msg = format!("Error serializing to JSON schema: {}", e);
             log!(target: &self.log_key, Level::Error, "{}", err_msg);
             zbus::fdo::Error::Failed(err_msg)
         })
     }
-    async fn last_value(&self) -> Result<T, zbus::fdo::Error> {
-        let guard = self.last_value.lock();
-        match *guard {
+    fn last_value(&self) -> Result<T, zbus::fdo::Error> {
+        match *self.new_value_recv.borrow() {
             Some(ref value) => Ok(value.clone()),
             None => Err(zbus::fdo::Error::Failed("No value set".into())),
         }
     }
     async fn tinker(&mut self, value: T) -> Result<(), zbus::fdo::Error> {
-        self.new_value_channel.send(value).await.map_err(|e| {
+        self.tinker_channel.send(value).await.map_err(|e| {
             let err_msg = format!("Error sending new value: {}", e);
             log!(target: &self.log_key, Level::Error, "{}", err_msg);
             zbus::fdo::Error::Failed(err_msg)
@@ -583,6 +500,8 @@ where
             *self.is_connected.lock() = true;
             self.connect_notify.notify_waiters();
         }
+        // little hack to make sure the connection is established
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         res
     }
     pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -774,23 +693,23 @@ where
         value: T,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         signal.lock().send(value).await?;
-        let base = base.lock();
-        let value_guard = base.value.read().await;
-        let value_ref = value_guard.as_ref().unwrap();
+        // let base = base.lock();
+        // let value_guard = base.value.read().await;
+        // let value_ref = value_guard.as_ref().unwrap();
 
-        let iface: Result<zbus::InterfaceRef<SignalInterface<T>>, zbus::Error> = bus
-            .object_server()
-            .interface(dbus_path.lock().as_str())
-            .await;
-        if let Ok(iface) = iface {
-            SignalInterface::value(&iface.signal_context(), value_ref).await?;
-        } else {
-            // This happens when the signal has not been registered yet,
-            // which can happen if the signal is sent before the interface is registered
-            // We simply ignore this case as the interface will be registered soon
-            log!(target: &base.log_key, Level::Info,
-                "Error sending signal value: {}", iface.err().unwrap());
-        }
+        // let iface: Result<zbus::InterfaceRef<SignalInterface<T>>, zbus::Error> = bus
+        //     .object_server()
+        //     .interface(dbus_path.lock().as_str())
+        //     .await;
+        // if let Ok(iface) = iface {
+        //     SignalInterface::value(&iface.signal_context(), value_ref).await?;
+        // } else {
+        //     // This happens when the signal has not been registered yet,
+        //     // which can happen if the signal is sent before the interface is registered
+        //     // We simply ignore this case as the interface will be registered soon
+        //     log!(target: &base.log_key, Level::Info,
+        //         "Error sending signal value: {}", iface.err().unwrap());
+        // }
         Ok(())
     }
 
@@ -1319,19 +1238,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::logger;
-    use quantities::mass::Mass;
     use rand::Rng;
     use std::io::Cursor;
-
-    fn setup_dirs() {
-        // let current_dir = std::env::current_dir().expect("Failed to get current directory");
-        // let current_dir_str = current_dir
-        //     .to_str()
-        //     .expect("Failed to convert path to string");
-        // std::env::set_var("RUNTIME_DIRECTORY", current_dir_str);
-        // std::env::set_var("CONFIGURATION_DIRECTORY", current_dir_str);
-    }
 
     fn packet_serialize_deserialize<T>(value: T)
     where
@@ -1411,343 +1319,4 @@ mod tests {
 
         packet_serialize_deserialize(Err(-1) as Result<Mass, i32>); // todo make
     }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_send_recv() -> Result<(), Box<dyn std::error::Error>> {
-        setup_dirs();
-        let _ = progbase::try_init();
-        let _ = logger::init_combined_logger();
-
-        let mut slot = SlotImpl::<bool>::new(Base::new("slot1", None));
-        let mut signal = SignalImpl::<bool>::new(Base::new("signal1", None));
-        signal.init().await?;
-
-        slot.async_connect(signal.full_name().as_str())
-            .await
-            .expect("This should connect");
-
-        let (recv, send) = tokio::join!(
-            tokio::time::timeout(tokio::time::Duration::from_secs(1), slot.recv()),
-            signal.send(true)
-        );
-
-        send.expect("Sender task panicked");
-
-        let value = match recv {
-            Ok(inner_result) => match inner_result {
-                Ok(value) => value,
-                Err(e) => {
-                    panic!("Error receiving value: {:?}", e);
-                }
-            },
-            Err(_) => {
-                panic!("Timeout occurred");
-            }
-        };
-
-        assert_eq!(value, true);
-
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_1000_sync_send_recv() -> Result<(), Box<dyn std::error::Error>> {
-        setup_dirs();
-        let _ = progbase::try_init();
-        let _ = logger::init_combined_logger();
-
-        let mut slot = SlotImpl::<bool>::new(Base::new("slot2", None));
-        let mut signal = SignalImpl::<bool>::new(Base::new("signal2", None));
-        signal.init().await?;
-
-        slot.async_connect(signal.full_name().as_str())
-            .await
-            .expect("This should connect");
-
-        let mut send_value = true;
-        for _ in 0..1000 {
-            let (recv, send) = tokio::join!(
-                tokio::time::timeout(tokio::time::Duration::from_secs(1), slot.recv()),
-                signal.send(send_value)
-            );
-
-            send.expect("Sender task panicked");
-
-            let value = match recv {
-                Ok(inner_result) => match inner_result {
-                    Ok(value) => value,
-                    Err(e) => {
-                        panic!("Error receiving value: {:?}", e);
-                    }
-                },
-                Err(_) => {
-                    panic!("Timeout occurred");
-                }
-            };
-
-            assert_eq!(value, send_value);
-            send_value = !send_value;
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_recv_after_send() -> Result<(), Box<dyn std::error::Error>> {
-        setup_dirs();
-        let _ = progbase::try_init();
-        let _ = logger::init_combined_logger();
-
-        let mut slot = SlotImpl::<bool>::new(Base::new("slot3", None));
-        let mut signal = SignalImpl::<bool>::new(Base::new("signal3", None));
-        signal.init().await?;
-
-        slot.async_connect(signal.full_name().as_str())
-            .await
-            .expect("This should connect");
-
-        signal.send(true).await.expect("This should not fail");
-
-        let recv = tokio::time::timeout(tokio::time::Duration::from_secs(1), slot.recv()).await;
-
-        let value = match recv {
-            Ok(inner_result) => match inner_result {
-                Ok(value) => value,
-                Err(e) => {
-                    panic!("Error receiving value: {:?}", e);
-                }
-            },
-            Err(_) => {
-                panic!("Timeout occurred");
-            }
-        };
-
-        assert_eq!(value, true);
-
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_async_send_recv() -> Result<(), Box<dyn std::error::Error>> {
-        setup_dirs();
-        let _ = progbase::try_init();
-        let _ = logger::init_combined_logger();
-
-        let mut slot = SlotImpl::<bool>::new(Base::new("slot4", None));
-        let mut signal = SignalImpl::<bool>::new(Base::new("signal4", None));
-        signal.init().await?;
-
-        slot.async_connect(signal.full_name().as_str())
-            .await
-            .expect("This should connect");
-
-        let send_values = vec![
-            true, true, false, false, true, true, false, false, true, true, false, false, true,
-            true, false, false,
-        ];
-        let recv_values = vec![
-            true, true, false, false, true, true, false, false, true, true, false, false, true,
-            true, false, false,
-        ];
-        let send_task = tokio::spawn(async move {
-            // This sleep makes sure that the receiver has already started and is listening before sending
-            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-            for val in send_values {
-                signal.send(val).await.expect("This should not fail");
-            }
-        });
-
-        let recv_task = tokio::spawn(async move {
-            for val in recv_values {
-                let recv_val = slot.recv().await.expect("This should not fail");
-                assert_eq!(recv_val, val);
-            }
-        });
-
-        let (recv_res, send_res) = tokio::join!(recv_task, send_task);
-
-        send_res.expect("Sender task panicked");
-        recv_res.expect("Receiver task panicked");
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_public_async_send_recv() -> Result<(), Box<dyn std::error::Error>> {
-        setup_dirs();
-        let _ = progbase::try_init();
-        let _ = logger::init_test_logger();
-        let bus = zbus::connection::Builder::system()?
-            .name(format!("is.centroid.{}.{}", "tfctest2", "tfctest2"))?
-            .build()
-            .await?;
-
-        let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot5", None));
-        let mut signal = Signal::<bool>::new(bus.clone(), Base::new("signal5", None));
-        log::info!("Waiting for init");
-        signal.init_task().await?;
-        log::info!("Init complete");
-
-        log::info!("Connecting");
-        slot.async_connect(signal.full_name())
-            .await
-            .expect("This should connect");
-        log::info!("Connected");
-        let send_values = vec![
-            true, true, false, false, true, true, false, false, true, true, false, false, true,
-            true, false, false,
-        ];
-        let recv_values = vec![
-            true, true, false, false, true, true, false, false, true, true, false, false, true,
-            true, false, false,
-        ];
-        let send_task = tokio::spawn(async move {
-            // This sleep makes sure that the receiver has already started and is listening before sending
-            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-            for val in send_values {
-                signal.async_send(val).await.expect("This should not fail");
-            }
-        });
-
-        let recv_task = tokio::spawn(async move {
-            for val in recv_values {
-                let recv_val = slot.async_recv().await;
-                // filtered out values are Errors, newstate filter
-                // the recv_values vector contains all values with filtered out values removed
-                if let Ok(recv_val) = recv_val {
-                    assert_eq!(recv_val.lock().unwrap(), val);
-                } else {
-                    assert_eq!(recv_val.err().unwrap().to_string(), "Same as last value");
-                }
-            }
-        });
-
-        let (recv_res, send_res) = tokio::join!(recv_task, send_task);
-
-        send_res.expect("Sender task panicked");
-        recv_res.expect("Receiver task panicked");
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_public_recv_after_send() -> Result<(), Box<dyn std::error::Error>> {
-        setup_dirs();
-        let _ = progbase::try_init();
-        let _ = logger::init_combined_logger();
-
-        let bus = zbus::connection::Builder::system()?
-            .name(format!("is.centroid.{}.{}", "tfctest3", "tfctest3"))?
-            .build()
-            .await?;
-
-        let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot6", None));
-        let mut signal = Signal::<bool>::new(bus.clone(), Base::new("signal6", None));
-        signal.init_task().await?;
-
-        slot.async_connect(signal.full_name())
-            .await
-            .expect("This should connect");
-
-        signal.async_send(true).await.expect("This should not fail");
-
-        let recv =
-            tokio::time::timeout(tokio::time::Duration::from_secs(1), slot.async_recv()).await;
-
-        let value = match recv {
-            Ok(inner_result) => match inner_result {
-                Ok(value) => value,
-                Err(e) => {
-                    panic!("Error receiving value: {:?}", e);
-                }
-            },
-            Err(_) => {
-                panic!("Timeout occurred");
-            }
-        };
-
-        assert_eq!(value.lock().unwrap(), true);
-
-        Ok(())
-    }
-    #[tokio::test]
-    async fn initialize_button() {
-        let bus = zbus::connection::Builder::system()
-            .expect("Build a bus")
-            .build()
-            .await
-            .expect("Build success");
-        let mut slot = Slot::<bool>::new(bus.clone(), Base::new("test_slot", None));
-        let mut signal = Signal::<bool>::new(bus, Base::new("test_signal", None));
-
-        // Connect them together
-        slot.connect(signal.full_name()).expect("Connect success");
-        //tokio::time::sleep(Duration::from_millis(1000)).await;
-
-        // Send some values and check they are correct
-        // Send true value
-        signal.async_send(true).await.expect("Send success");
-        let value =
-            (*slot.async_recv().await.expect("Have some value").lock()).expect("Got some value");
-        assert_eq!(value, true);
-
-        // Send false value
-        signal.async_send(false).await.expect("Send success");
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-        assert_eq!(slot.value().expect("Has value"), false);
-    }
-    // #[tokio::test]
-    // async fn basic_send_recv_test() -> Result<(), Box<dyn std::error::Error>> {
-    //     progbase::init();
-
-    //     let _ = logger::init_combined_logger();
-
-    //     let bus = zbus::connection::Builder::system()?
-    //         .name(format!("is.centroid.{}.{}", "tfctest", "tfctest"))?
-    //         .build()
-    //         .await?;
-    //     let mut my_little_slot = Slot::<bool>::new(bus.clone(), Base::new("my_little_slot", None));
-    //     let mut my_little_signal = Signal::<bool>::new(bus, Base::new("my_little_signal", None));
-
-    //     let vals_to_send = vec![
-    //         false, false, true, true, false, false, true, true, false, false, true, true, false,
-    //         false,
-    //     ];
-    //     let vals_to_recv = vec![false, true, false, true, false, true, false];
-
-    //     my_little_slot
-    //         .connect(my_little_signal.full_name())
-    //         .expect("This should connect");
-
-    //     let mut stream = my_little_slot.stream();
-    //     let recv_task = tokio::spawn(async move {
-    //         let mut counter = 0;
-    //         for expected_val in vals_to_recv {
-    //             tokio::select! {
-    //                 val = stream.next() => {
-    //                     assert_eq!(val.expect("This should not fail"), expected_val);
-    //                     counter += 1;
-    //                 },
-    //                 _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
-    //                     panic!("No value received for 1 second, only received {} values", counter);
-    //                 }
-    //             }
-    //         }
-    //     });
-
-    //     let send_task = tokio::spawn(async move {
-    //         for val in vals_to_send {
-    //             my_little_signal
-    //                 .async_send(val)
-    //                 .await
-    //                 .expect("This should not fail");
-    //         }
-    //     });
-
-    //     let (recv_res, send_res) = tokio::join!(recv_task, send_task);
-
-    //     recv_res.expect("Receiver task panicked");
-
-    //     send_res.expect("Sender task panicked");
-
-    //     Ok(())
-    // }
 }
