@@ -49,10 +49,10 @@ impl<T: TypeName> Base<T> {
             _marker: PhantomData,
         }
     }
-    fn type_and_name(name: &str) -> String {
+    pub fn type_and_name(name: &str) -> String {
         format!("{}/{}", T::type_name(), name)
     }
-    fn full_name(&self) -> String {
+    pub fn full_name(&self) -> String {
         format!(
             "{}.{}.{}.{}",
             progbase::exe_name(),
@@ -61,10 +61,10 @@ impl<T: TypeName> Base<T> {
             self.name
         )
     }
-    fn endpoint(&self) -> String {
+    pub fn endpoint(&self) -> String {
         endpoint(&self.full_name())
     }
-    fn path(&self) -> PathBuf {
+    pub fn path(&self) -> PathBuf {
         let runtime_dir =
             std::env::var("RUNTIME_DIRECTORY").unwrap_or_else(|_| FILE_PATH.to_string());
         PathBuf::from(format!("{}{}", runtime_dir, self.full_name()))
@@ -83,6 +83,7 @@ where
     connect_change_task: JoinHandle<()>,
     register_task: JoinHandle<()>,
     recv_task: JoinHandle<()>,
+    base: Base<T>,
 }
 
 impl<T> Slot<T>
@@ -113,7 +114,6 @@ where
             + JsonSchema,
     {
         let log_key = base.log_key.clone();
-        let dbus_path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
 
         let connect_notify = Arc::new(Notify::new());
 
@@ -248,6 +248,7 @@ where
             connect_change_task,
             register_task,
             recv_task,
+            base,
         }
     }
 
@@ -267,10 +268,11 @@ where
     }
 
     // return tuple of watch recv and send
-    pub fn channel(&self, name: String) -> (watch::Sender<Option<T>>, watch::Receiver<Option<T>>) {
+    pub fn channel(&self, name: &str) -> (watch::Sender<Option<T>>, watch::Receiver<Option<T>>) {
         let (tx, mut rx) = watch::channel(None as Option<T>);
         let log_key = self.log_key.clone();
         let self_tx = self.new_value_signal.clone();
+        let name = name.to_string();
         tokio::spawn(async move {
             loop {
                 rx.changed().await.expect("Error watching for changes");
@@ -301,6 +303,7 @@ where
             }
         });
     }
+
     pub async fn async_connect(
         &mut self,
         signal_name: &str,
@@ -308,6 +311,7 @@ where
         self.connect_notify.notify_waiters();
         self.slot.write().await.async_connect(signal_name).await
     }
+
     pub fn connect(&mut self, signal_name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         let shared_slot: Arc<RwLock<SlotImpl<T>>> = Arc::clone(&self.slot);
         let shared_connect_notify = Arc::clone(&self.connect_notify);
@@ -317,6 +321,10 @@ where
             shared_slot.write().await.connect(&name)
         });
         Ok(())
+    }
+
+    pub fn base(&self) -> Base<T> {
+        Base::new(&self.base.name, self.base.description.as_deref())
     }
 }
 impl<T: Send + Sync + 'static + PartialEq + AnyFilterDecl> Drop for Slot<T>
@@ -472,7 +480,6 @@ where
 
 pub struct Signal<T: TypeName> {
     base: Base<T>,
-    monitor: Option<mpsc::Receiver<SocketEvent>>,
     value_sender: watch::Sender<Option<T>>,
     init_task: Option<tokio::task::JoinHandle<()>>,
     monitor_task: tokio::task::JoinHandle<()>,
@@ -581,7 +588,6 @@ where
 
         Self {
             base,
-            monitor: None,
             value_sender,
             init_task: Some(init_task),
             monitor_task,
@@ -625,8 +631,18 @@ where
         Ok(())
     }
 
-    pub fn full_name(&self) -> String {
-        self.base.full_name()
+    pub fn base(&self) -> Base<T> {
+        if let Some(ref description) = self.base.description {
+            Base::new(&self.base.name, Some(description.as_str()))
+        } else {
+            Base::new(&self.base.name, None)
+        }
+    }
+
+    // Receive changes to the signal
+    pub fn subscribe(&self) -> watch::Receiver<Option<T>> {
+        // todo I would like to prioritize the zmq send over this
+        self.value_sender.subscribe()
     }
 
     pub async fn init_task(&mut self) -> Result<(), tokio::task::JoinError> {

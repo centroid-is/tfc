@@ -24,16 +24,18 @@ impl<
             + TypeName,
     > SignalInterface<T>
 {
-    pub fn register(dbus: zbus::Connection, watch: watch::Receiver<Option<T>>, base: Base<T>) {
+    pub fn register(base: Base<T>, dbus: zbus::Connection, watch: watch::Receiver<Option<T>>) {
         tokio::spawn(async move {
-            Self::async_register(dbus, watch, base).await;
+            Self::async_register(base, dbus, watch)
+                .await
+                .expect("Error registering signal");
         });
     }
 
     pub async fn async_register(
+        base: Base<T>,
         dbus: zbus::Connection,
         watch: watch::Receiver<Option<T>>,
-        base: Base<T>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let path = format!(
             "/is/centroid/Signal/{}",
@@ -45,7 +47,10 @@ impl<
         let path_cp = path.clone();
         let watch_task = tokio::spawn(async move {
             loop {
-                watch_cp.changed().await;
+                watch_cp
+                    .changed()
+                    .await
+                    .expect("Error watching for changes");
                 // Copy the value to prevent holding onto a borrow across an await point
                 let copy_val: Option<T> = watch_cp.borrow_and_update().clone();
                 match copy_val {
@@ -56,7 +61,9 @@ impl<
                             .interface(path_cp.clone())
                             .await
                             .expect("Error getting interface");
-                        SignalInterface::value(&iface.signal_context(), value).await;
+                        SignalInterface::value(&iface.signal_context(), value)
+                            .await
+                            .expect("Error sending value");
                     }
                     None => {
                         error!(target: &path_cp, "No value set");
@@ -144,20 +151,35 @@ impl<
             + TypeName,
     > SlotInterface<T>
 {
-    pub async fn async_register(
-        dbus: zbus::Connection,
-        value_sender: watch::Sender<Option<T>>,
-        value_receiver: watch::Receiver<Option<T>>,
+    pub fn register(
         base: Base<T>,
+        dbus: zbus::Connection,
+        channel: (watch::Sender<Option<T>>, watch::Receiver<Option<T>>),
+    ) {
+        tokio::spawn(async move {
+            Self::async_register(base, dbus, channel)
+                .await
+                .expect("Error registering slot");
+        });
+    }
+
+    pub async fn async_register(
+        base: Base<T>,
+        dbus: zbus::Connection,
+        channel: (watch::Sender<Option<T>>, watch::Receiver<Option<T>>),
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let path = format!("/is/centroid/Slot/{}", Base::<T>::type_and_name(&base.name));
+        let (value_sender, value_receiver) = channel;
 
         let mut watch_cp = value_receiver.clone();
         let dbus_cp = dbus.clone();
         let path_cp = path.clone();
         let watch_task = tokio::spawn(async move {
             loop {
-                watch_cp.changed().await;
+                watch_cp
+                    .changed()
+                    .await
+                    .expect("Error watching for changes");
                 // Copy the value to prevent holding onto a borrow across an await point
                 let copy_val: Option<T> = watch_cp.borrow_and_update().clone();
                 match copy_val {
@@ -168,7 +190,9 @@ impl<
                             .interface(path_cp.clone())
                             .await
                             .expect("Error getting interface");
-                        SlotInterface::value(&iface.signal_context(), value).await;
+                        SlotInterface::value(&iface.signal_context(), value)
+                            .await
+                            .expect("Error sending value");
                     }
                     None => {
                         error!(target: &path_cp, "No value set");
@@ -234,6 +258,12 @@ where
     }
     #[zbus(signal)]
     async fn value(signal_ctxt: &zbus::SignalContext<'_>, val: &T) -> zbus::Result<()>;
+}
+
+impl<T> Drop for SlotInterface<T> {
+    fn drop(&mut self) {
+        self.watch_task.abort();
+    }
 }
 
 mod detail {

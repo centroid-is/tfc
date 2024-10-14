@@ -1,5 +1,5 @@
 use tfc::confman::ConfMan;
-use tfc::ipc::{Base, Signal, Slot, SlotImpl};
+use tfc::ipc::{dbus, Base, Signal, Slot, SlotImpl};
 use tfc::logger;
 use tfc::progbase;
 
@@ -81,9 +81,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Received value: {:?}", val);
     }));
     println!("Slot created");
-    let _ = i64_raw_slot.connect(&i64_signal.full_name());
-    let _ = i64_slot.connect(&i64_signal.full_name());
-    let _ = i64_slot_stream.connect(&i64_signal.full_name());
+    dbus::SignalInterface::register(i64_signal.base(), _conn.clone(), i64_signal.subscribe());
+    dbus::SlotInterface::register(i64_slot.base(), _conn.clone(), i64_slot.channel("dbus"));
+    dbus::SlotInterface::register(
+        i64_slot_stream.base(),
+        _conn.clone(),
+        i64_slot_stream.channel("dbus"),
+    );
+    let _ = i64_raw_slot.connect(&i64_signal.base().full_name());
+    let _ = i64_slot.connect(&i64_signal.base().full_name());
+    let _ = i64_slot_stream.connect(&i64_signal.base().full_name());
     println!("Slot connected");
 
     let mut stream = i64_slot_stream.subscribe();
