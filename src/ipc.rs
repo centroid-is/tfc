@@ -597,7 +597,7 @@ where
 }
 
 pub struct Signal<T: TypeName> {
-    signal: Arc<Mutex<SignalImpl<T>>>,
+    signal: Arc<TMutex<SignalImpl<T>>>,
     full_name: String,
     base: Arc<Mutex<Base<T>>>,
     dbus_path: Arc<Mutex<String>>,
@@ -637,14 +637,14 @@ where
         let dbus_path_cp = dbus_path.clone();
         let bus_cp = bus.clone();
         let base_cp = base.clone();
-        let signal = Arc::new(Mutex::new(SignalImpl::new(base_cp)));
+        let signal = Arc::new(TMutex::new(SignalImpl::new(base_cp)));
         let signal_cp = Arc::clone(&signal);
 
         let name = base.full_name();
         let description = base.description.clone().unwrap_or(String::new());
 
         let init_task = tokio::spawn(async move {
-            let _ = signal_cp.lock().init().await;
+            let _ = signal_cp.lock().await.init().await;
         });
         tokio::spawn(async move {
             let _ = bus_cp
@@ -690,13 +690,13 @@ where
     }
 
     async fn async_send_impl(
-        signal: Arc<Mutex<SignalImpl<T>>>,
+        signal: Arc<TMutex<SignalImpl<T>>>,
         base: Arc<Mutex<Base<T>>>,
         bus: zbus::Connection,
         dbus_path: Arc<Mutex<String>>,
         value: T,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        signal.lock().send(value).await?;
+        signal.lock().await.send(value).await?;
         // let base = base.lock();
         // let value_guard = base.value.read().await;
         // let value_ref = value_guard.as_ref().unwrap();
