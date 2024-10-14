@@ -251,7 +251,7 @@ mod tests {
 
         let recv_task = tokio::spawn(async move {
             let mut counter = 0;
-            let mut watcher = slot.watch();
+            let mut watcher = slot.subscribe();
             for val in recv_values {
                 watcher.changed().await.expect("This should not fail");
                 let recv_val = watcher.borrow_and_update();
@@ -309,7 +309,7 @@ mod tests {
         let rx_count = count.clone();
         let recv_task = tokio::spawn(async move {
             let start = std::time::Instant::now();
-            let mut watcher = slot.watch();
+            let mut watcher = slot.subscribe();
             debug!("Receiving!!!!!!!!!!!!!!!!!!!!!!!!");
             for val in 1..rx_count {
                 watcher.changed().await.expect("This should not fail");

@@ -77,8 +77,6 @@ where
 {
     slot: Arc<RwLock<SlotImpl<T>>>,
     connect_notify: Arc<Notify>,
-    dbus_path: String,
-    bus: zbus::Connection,
     log_key: String,
     new_value_signal: watch::Sender<Option<T>>,
     connect_change_task: JoinHandle<()>,
@@ -280,8 +278,6 @@ where
         Self {
             slot,
             connect_notify,
-            dbus_path,
-            bus,
             log_key,
             new_value_signal: new_value_sender,
             connect_change_task,
@@ -291,7 +287,7 @@ where
     }
 
     pub async fn async_recv(&self) -> Result<Option<T>, Box<dyn Error + Send + Sync>> {
-        let mut watcher = self.watch();
+        let mut watcher = self.subscribe();
         // todo return error if we can't watch
         let _ = watcher.changed().await.map_err(|_| {
             log!(target: &self.log_key, Level::Error,
@@ -301,26 +297,23 @@ where
         Ok(value)
     }
 
-    pub fn watch(&self) -> watch::Receiver<Option<T>> {
+    pub fn subscribe(&self) -> watch::Receiver<Option<T>> {
         self.new_value_signal.subscribe()
     }
 
     // return tuple of watch recv and send
-    pub fn partner_coms(
-        &self,
-        name: String,
-    ) -> (watch::Sender<Option<T>>, watch::Receiver<Option<T>>) {
+    pub fn channel(&self, name: String) -> (watch::Sender<Option<T>>, watch::Receiver<Option<T>>) {
         let (tx, mut rx) = watch::channel(None as Option<T>);
         let log_key = self.log_key.clone();
         let self_tx = self.new_value_signal.clone();
         tokio::spawn(async move {
             loop {
-                rx.changed().await;
+                rx.changed().await.expect("Error watching for changes");
                 let value = rx.borrow().clone();
                 trace!(target: &log_key, "Changed {} value to {:?}", name, value); // OPC-UA Changed Temperature value to 10
                                                                                    // DBUS-Tinker Changed Temperature value to -1
                                                                                    // Override current slot value with tinkered value.
-                self_tx.send(value);
+                self_tx.send(value).expect("Error sending value to slot");
             }
         });
         (tx, self.new_value_signal.subscribe())
@@ -330,7 +323,7 @@ where
     where
         <T as AnyFilterDecl>::Type: Send + Sync + Filter<T>,
     {
-        let mut watcher = self.watch();
+        let mut watcher = self.subscribe();
         let log_key = self.log_key.clone();
         tokio::spawn(async move {
             loop {
@@ -468,7 +461,7 @@ pub struct SlotImpl<T> {
     sock: Arc<Mutex<Option<SubSocket>>>,
     is_connected: Arc<Mutex<bool>>,
     connect_notify: Arc<Notify>,
-    connect_cancel_token: CancellationToken,
+    connect_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl<T> SlotImpl<T>
@@ -485,7 +478,7 @@ where
             sock: Arc::new(Mutex::new(None)),
             is_connected: Arc::new(Mutex::new(false)),
             connect_notify: Arc::new(Notify::new()),
-            connect_cancel_token: CancellationToken::new(),
+            connect_task: None,
         }
     }
     async fn async_connect_(
@@ -533,10 +526,10 @@ where
         let shared_connect_notify = Arc::clone(&self.connect_notify);
 
         // cancel any previous connect
-        self.connect_cancel_token.cancel();
-        self.connect_cancel_token = CancellationToken::new();
-        let token = self.connect_cancel_token.child_token();
-        tokio::spawn(async move {
+        if let Some(task) = self.connect_task.take() {
+            task.abort();
+        }
+        self.connect_task = Some(tokio::spawn(async move {
             {
                 let mut socket = shared_sock.lock();
                 if let Some(sub_socket) = socket.take() {
@@ -550,44 +543,34 @@ where
                 }
             }
             loop {
-                let connect_task = async {
+                let connect_res = tokio::time::timeout(
+                    tokio::time::Duration::from_millis(100),
                     Self::async_connect_(
                         log_key_cp.as_str(),
                         Arc::clone(&shared_sock),
                         signal_name_str.as_str(),
-                    )
-                    .await
-                };
-                let timeout_task =
-                    async { tokio::time::sleep(tokio::time::Duration::from_millis(100)).await };
-
-                match select! {
-                    result = connect_task => Either::Left(result),
-                    _ = timeout_task => Either::Right(()),
-                    cancel_result = token.cancelled() => {
+                    ),
+                )
+                .await;
+                match connect_res {
+                    Ok(Ok(())) => {
                         log!(target: &log_key_cp, Level::Trace,
-                            "Connect to: {:?} cancelled, error: {:?}", signal_name_str, cancel_result);
-                        break;
-                    }
-                } {
-                    Either::Left(Ok(_)) => {
-                        log!(target: &log_key_cp, Level::Trace,
-                            "Connect to: {:?} succesful", signal_name_str);
-                        // don't know why we need to notify here, if we are notifying in async_connect
+                            "Connect to: {:?} successful", signal_name_str);
                         *shared_is_connected.lock() = true;
                         shared_connect_notify.notify_waiters();
                         break;
                     }
-                    Either::Left(Err(e)) => {
-                        log!(target: &log_key_cp, Level::Trace, "Connect failed: {:?} will try again", e);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    Ok(Err(e)) => {
+                        log!(target: &log_key_cp, Level::Trace,
+                            "Connect to: {:?} failed: {:?}, will try again", signal_name_str, e);
                     }
-                    Either::Right(_) => {
-                        log!(target: &log_key_cp, Level::Trace, "Connect timed out");
+                    Err(_) => {
+                        log!(target: &log_key_cp, Level::Trace,
+                            "Connect to: {:?} timed out, will try again", signal_name_str);
                     }
                 }
             }
-        });
+        }));
         Ok(())
     }
     pub async fn recv(&self) -> Result<T, Box<dyn Error + Send + Sync>> {
