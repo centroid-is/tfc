@@ -163,7 +163,6 @@ where
         let shared_name = base.full_name();
         let shared_description = base.description.clone().unwrap_or(String::new());
         let shared_bus = bus.clone();
-        let shared_dbus_path = dbus_path.clone();
         // register the dbus interface for this slot
         let register_task = tokio::spawn(async move {
             let proxy = IpcRulerProxy::builder(&shared_bus)
@@ -477,7 +476,7 @@ pub struct Signal<T: TypeName> {
     value_sender: watch::Sender<Option<T>>,
     init_task: Option<tokio::task::JoinHandle<()>>,
     monitor_task: tokio::task::JoinHandle<()>,
-    register_task: tokio::task::JoinHandle<()>,
+    register_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl<T> Signal<T>
@@ -492,7 +491,7 @@ where
         + Send
         + 'static,
 {
-    pub fn new(base: Base<T>, bus: Option<zbus::Connection>) -> Self {
+    pub fn new(base: Base<T>) -> Self {
         let (value_sender, mut value_receiver) = watch::channel(None as Option<T>);
 
         let (mut sock_sender, mut sock_receiver) = mpsc::channel::<PubSocket>(1);
@@ -580,14 +579,21 @@ where
             }
         });
 
-        let name = base.full_name();
-        let description = base.description.clone().unwrap_or(String::new());
-        let log_key = base.log_key.clone();
-        let register_task = tokio::spawn(async move {
-            if bus.is_none() {
-                return;
-            }
-            let bus = bus.unwrap();
+        Self {
+            base,
+            monitor: None,
+            value_sender,
+            init_task: Some(init_task),
+            monitor_task,
+            register_task: None,
+        }
+    }
+
+    pub fn register(mut self, bus: zbus::Connection) -> Self {
+        let name = self.base.full_name();
+        let description = self.base.description.clone().unwrap_or(String::new());
+        let log_key = self.base.log_key.clone();
+        self.register_task = Some(tokio::spawn(async move {
             let proxy = IpcRulerProxy::builder(&bus)
                 .cache_properties(zbus::CacheProperties::No)
                 .build()
@@ -604,15 +610,8 @@ where
                     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                 }
             }
-        });
-        Self {
-            base,
-            monitor: None,
-            value_sender,
-            init_task: Some(init_task),
-            monitor_task,
-            register_task,
-        }
+        }));
+        self
     }
 
     pub async fn async_send(&mut self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -641,7 +640,9 @@ impl<T: TypeName> Drop for Signal<T> {
             init_task.abort();
         }
         self.monitor_task.abort();
-        self.register_task.abort();
+        if let Some(register_task) = self.register_task.take() {
+            register_task.abort();
+        }
         let file = self.base.endpoint();
         std::fs::remove_file(file).unwrap_or(());
     }

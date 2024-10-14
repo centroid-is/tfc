@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _config = ConfMan::<Greeter>::new(_conn.clone(), "greeterfu_uf0");
 
-    let mut i64_signal = Signal::<i64>::new(Base::new("foo", None), Some(_conn.clone()));
+    let mut i64_signal = Signal::<i64>::new(Base::new("foo", None)).register(_conn.clone());
 
     // let _ = Application::new(&i64_signal.full_name());
 
@@ -116,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     for i in 1..1024 {
-        i64_signal.async_send(i).await;
+        i64_signal.async_send(i).await.expect("Failed to send");
         println!("The value of i is: {}", i);
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }

@@ -18,15 +18,10 @@ mod tests {
     async fn test_async_send_recv_many() -> Result<(), Box<dyn std::error::Error>> {
         setup_dirs();
         let _ = progbase::try_init();
-        let _ = logger::init_combined_logger();
-
-        let bus = zbus::connection::Builder::system()?
-            .name(format!("is.centroid.{}.{}", "tfctest4", "tfctest4"))?
-            .build()
-            .await?;
+        // let _ = logger::init_combined_logger();
 
         let mut slot = SlotImpl::<i64>::new(Base::new("slot5", None));
-        let mut signal = Signal::<i64>::new(Base::new("signal5", None), Some(bus.clone()));
+        let mut signal = Signal::<i64>::new(Base::new("signal5", None));
         signal.init_task().await?;
 
         slot.async_connect(&signal.full_name())
@@ -71,7 +66,7 @@ mod tests {
             .await?;
 
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot6", None));
-        let mut signal = Signal::<bool>::new(Base::new("signal6", None), Some(bus.clone()));
+        let mut signal = Signal::<bool>::new(Base::new("signal6", None));
         log::info!("Waiting for init");
         signal.init_task().await?;
         log::info!("Init complete");
@@ -131,7 +126,7 @@ mod tests {
             .await?;
 
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot7", None));
-        let mut signal = Signal::<bool>::new(Base::new("signal7", None), Some(bus.clone()));
+        let mut signal = Signal::<bool>::new(Base::new("signal7", None));
         log::info!("Waiting for init");
         signal.init_task().await?;
         log::info!("Init complete");
@@ -194,7 +189,7 @@ mod tests {
             .await?;
 
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot8", None));
-        let mut signal = Signal::<bool>::new(Base::new("signal8", None), Some(bus.clone()));
+        let mut signal = Signal::<bool>::new(Base::new("signal8", None));
         signal.init_task().await?;
 
         slot.async_connect(&signal.full_name())
@@ -230,7 +225,7 @@ mod tests {
             .await
             .expect("Build success");
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("test_slot", None));
-        let mut signal = Signal::<bool>::new(Base::new("test_signal", None), Some(bus));
+        let mut signal = Signal::<bool>::new(Base::new("test_signal", None));
 
         // Connect them together
         slot.connect(&signal.full_name()).expect("Connect success");
