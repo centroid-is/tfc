@@ -15,168 +15,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_send_recv() -> Result<(), Box<dyn std::error::Error>> {
-        setup_dirs();
-        let _ = progbase::try_init();
-        // let _ = logger::init_combined_logger();
-
-        let mut slot = SlotImpl::<bool>::new(Base::new("slot1", None));
-        let mut signal = SignalImpl::<bool>::new(Base::new("signal1", None));
-        signal.init().await?;
-
-        slot.async_connect(signal.full_name().as_str())
-            .await
-            .expect("This should connect");
-
-        let (recv, send) = tokio::join!(
-            tokio::time::timeout(tokio::time::Duration::from_secs(1), slot.recv()),
-            signal.send(true)
-        );
-
-        send.expect("Sender task panicked");
-
-        let value = match recv {
-            Ok(inner_result) => match inner_result {
-                Ok(value) => value,
-                Err(e) => {
-                    panic!("Error receiving value: {:?}", e);
-                }
-            },
-            Err(_) => {
-                panic!("Timeout occurred");
-            }
-        };
-
-        assert_eq!(value, true);
-
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_1000_sync_send_recv() -> Result<(), Box<dyn std::error::Error>> {
-        setup_dirs();
-        let _ = progbase::try_init();
-        // let _ = logger::init_combined_logger();
-
-        let mut slot = SlotImpl::<bool>::new(Base::new("slot2", None));
-        let mut signal = SignalImpl::<bool>::new(Base::new("signal2", None));
-        signal.init().await?;
-
-        slot.async_connect(signal.full_name().as_str())
-            .await
-            .expect("This should connect");
-
-        let mut send_value = true;
-        let start = std::time::Instant::now();
-        for _ in 0..100000 {
-            let (recv, send) = tokio::join!(
-                tokio::time::timeout(tokio::time::Duration::from_secs(1), slot.recv()),
-                signal.send(send_value)
-            );
-
-            send.expect("Sender task panicked");
-
-            let value = match recv {
-                Ok(inner_result) => match inner_result {
-                    Ok(value) => value,
-                    Err(e) => {
-                        panic!("Error receiving value: {:?}", e);
-                    }
-                },
-                Err(_) => {
-                    panic!("Timeout occurred");
-                }
-            };
-
-            assert_eq!(value, send_value);
-            send_value = !send_value;
-        }
-        let duration = start.elapsed();
-        println!("Duration: {:?}", duration);
-
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_recv_after_send() -> Result<(), Box<dyn std::error::Error>> {
-        setup_dirs();
-        let _ = progbase::try_init();
-        // let _ = logger::init_combined_logger();
-
-        let mut slot = SlotImpl::<bool>::new(Base::new("slot3", None));
-        let mut signal = SignalImpl::<bool>::new(Base::new("signal3", None));
-        signal.init().await?;
-
-        slot.async_connect(signal.full_name().as_str())
-            .await
-            .expect("This should connect");
-
-        signal.send(true).await.expect("This should not fail");
-
-        let recv = tokio::time::timeout(tokio::time::Duration::from_secs(1), slot.recv()).await;
-
-        let value = match recv {
-            Ok(inner_result) => match inner_result {
-                Ok(value) => value,
-                Err(e) => {
-                    panic!("Error receiving value: {:?}", e);
-                }
-            },
-            Err(_) => {
-                panic!("Timeout occurred");
-            }
-        };
-
-        assert_eq!(value, true);
-
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_async_send_recv() -> Result<(), Box<dyn std::error::Error>> {
-        setup_dirs();
-        let _ = progbase::try_init();
-        let _ = logger::init_combined_logger();
-
-        let mut slot = SlotImpl::<bool>::new(Base::new("slot4", None));
-        let mut signal = SignalImpl::<bool>::new(Base::new("signal4", None));
-        signal.init().await?;
-
-        slot.async_connect(signal.full_name().as_str())
-            .await
-            .expect("This should connect");
-
-        let send_values = vec![
-            true, true, false, false, true, true, false, false, true, true, false, false, true,
-            true, false, false,
-        ];
-        let recv_values = vec![
-            true, true, false, false, true, true, false, false, true, true, false, false, true,
-            true, false, false,
-        ];
-        let send_task = tokio::spawn(async move {
-            // This sleep makes sure that the receiver has already started and is listening before sending
-            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-            for val in send_values {
-                signal.send(val).await.expect("This should not fail");
-            }
-        });
-
-        let recv_task = tokio::spawn(async move {
-            for val in recv_values {
-                let recv_val = slot.recv().await.expect("This should not fail");
-                assert_eq!(recv_val, val);
-            }
-        });
-
-        let (recv_res, send_res) = tokio::join!(recv_task, send_task);
-
-        send_res.expect("Sender task panicked");
-        recv_res.expect("Receiver task panicked");
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn test_async_send_recv_many() -> Result<(), Box<dyn std::error::Error>> {
         setup_dirs();
         let _ = progbase::try_init();
@@ -188,10 +26,10 @@ mod tests {
             .await?;
 
         let mut slot = SlotImpl::<i64>::new(Base::new("slot5", None));
-        let mut signal = Signal::<i64>::new(bus.clone(), Base::new("signal5", None));
+        let mut signal = Signal::<i64>::new(Base::new("signal5", None), Some(bus.clone()));
         signal.init_task().await?;
 
-        slot.async_connect(signal.full_name())
+        slot.async_connect(&signal.full_name())
             .await
             .expect("This should connect");
 
@@ -233,13 +71,13 @@ mod tests {
             .await?;
 
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot6", None));
-        let mut signal = Signal::<bool>::new(bus.clone(), Base::new("signal6", None));
+        let mut signal = Signal::<bool>::new(Base::new("signal6", None), Some(bus.clone()));
         log::info!("Waiting for init");
         signal.init_task().await?;
         log::info!("Init complete");
 
         log::info!("Connecting");
-        slot.async_connect(signal.full_name())
+        slot.async_connect(&signal.full_name())
             .await
             .expect("This should connect");
         log::info!("Connected");
@@ -293,13 +131,13 @@ mod tests {
             .await?;
 
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot7", None));
-        let mut signal = Signal::<bool>::new(bus.clone(), Base::new("signal7", None));
+        let mut signal = Signal::<bool>::new(Base::new("signal7", None), Some(bus.clone()));
         log::info!("Waiting for init");
         signal.init_task().await?;
         log::info!("Init complete");
 
         log::info!("Connecting");
-        slot.async_connect(signal.full_name())
+        slot.async_connect(&signal.full_name())
             .await
             .expect("This should connect");
 
@@ -348,7 +186,7 @@ mod tests {
     async fn test_public_recv_after_send() -> Result<(), Box<dyn std::error::Error>> {
         setup_dirs();
         let _ = progbase::try_init();
-        let _ = logger::init_combined_logger();
+        // let _ = logger::init_combined_logger();
 
         let bus = zbus::connection::Builder::system()?
             .name(format!("is.centroid.{}.{}", "tfctest3", "tfctest3"))?
@@ -356,10 +194,10 @@ mod tests {
             .await?;
 
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot8", None));
-        let mut signal = Signal::<bool>::new(bus.clone(), Base::new("signal8", None));
+        let mut signal = Signal::<bool>::new(Base::new("signal8", None), Some(bus.clone()));
         signal.init_task().await?;
 
-        slot.async_connect(signal.full_name())
+        slot.async_connect(&signal.full_name())
             .await
             .expect("This should connect");
 
@@ -392,10 +230,10 @@ mod tests {
             .await
             .expect("Build success");
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("test_slot", None));
-        let mut signal = Signal::<bool>::new(bus, Base::new("test_signal", None));
+        let mut signal = Signal::<bool>::new(Base::new("test_signal", None), Some(bus));
 
         // Connect them together
-        slot.connect(signal.full_name()).expect("Connect success");
+        slot.connect(&signal.full_name()).expect("Connect success");
         //tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Send some values and check they are correct

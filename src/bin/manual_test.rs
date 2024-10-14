@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _config = ConfMan::<Greeter>::new(_conn.clone(), "greeterfu_uf0");
 
-    let mut i64_signal = Signal::<i64>::new(_conn.clone(), Base::new("foo", None));
+    let mut i64_signal = Signal::<i64>::new(Base::new("foo", None), Some(_conn.clone()));
 
     // let _ = Application::new(&i64_signal.full_name());
 
@@ -81,9 +81,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Received value: {:?}", val);
     }));
     println!("Slot created");
-    let _ = i64_raw_slot.connect(i64_signal.full_name());
-    let _ = i64_slot.connect(i64_signal.full_name());
-    let _ = i64_slot_stream.connect(i64_signal.full_name());
+    let _ = i64_raw_slot.connect(&i64_signal.full_name());
+    let _ = i64_slot.connect(&i64_signal.full_name());
+    let _ = i64_slot_stream.connect(&i64_signal.full_name());
     println!("Slot connected");
 
     let mut stream = i64_slot_stream.subscribe();
@@ -116,10 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     for i in 1..1024 {
-        i64_signal
-            .async_send(i)
-            .await
-            .expect("This should not fail");
+        i64_signal.async_send(i).await;
         println!("The value of i is: {}", i);
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }

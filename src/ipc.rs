@@ -9,7 +9,6 @@ use schemars::JsonSchema;
 use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf, sync::Arc};
 use tokio::select;
-use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::Mutex as TMutex;
 use tokio::sync::{watch, Notify, RwLock};
 use tokio::task::JoinHandle;
@@ -25,6 +24,8 @@ use crate::filter::Filters;
 use crate::ipc_ruler_client::IpcRulerProxy;
 use crate::progbase;
 
+pub mod dbus;
+
 const FILE_PREFIX: &'static str = "ipc://";
 const FILE_PATH: &'static str = "/var/run/tfc/";
 fn endpoint(file_name: &str) -> String {
@@ -35,8 +36,8 @@ fn endpoint(file_name: &str) -> String {
 pub struct Base<T> {
     pub name: String,
     pub description: Option<String>,
-    pub value: Arc<RwLock<Option<T>>>,
     pub log_key: String,
+    _marker: PhantomData<T>,
 }
 
 impl<T: TypeName> Base<T> {
@@ -44,8 +45,8 @@ impl<T: TypeName> Base<T> {
         Self {
             name: String::from(name),
             description: description.map(|s| s.to_string()),
-            value: Arc::new(RwLock::new(None)),
             log_key: Self::type_and_name(name),
+            _marker: PhantomData,
         }
     }
     fn type_and_name(name: &str) -> String {
@@ -96,7 +97,6 @@ where
         // todo is this proper below
         + Type
         + Clone
-        + detail::SupportedTypes
         + JsonSchema
         + for<'a> zbus::export::serde::de::Deserialize<'a>
         + zbus::export::serde::ser::Serialize
@@ -159,9 +159,6 @@ where
             }
         });
 
-        let (tinker_channel_sender, mut tinker_channel_receiver) = tokio_mpsc::channel(10);
-        let client =
-            SlotInterface::new(new_value_receiver.clone(), tinker_channel_sender, &log_key);
         let shared_log_key = log_key.clone();
         let shared_name = base.full_name();
         let shared_description = base.description.clone().unwrap_or(String::new());
@@ -169,11 +166,6 @@ where
         let shared_dbus_path = dbus_path.clone();
         // register the dbus interface for this slot
         let register_task = tokio::spawn(async move {
-            let _ = shared_bus
-                .object_server()
-                .at(shared_dbus_path, client)
-                .await
-                .expect(&format!("Error registering object: {}", shared_log_key));
             let proxy = IpcRulerProxy::builder(&shared_bus)
                 .cache_properties(zbus::CacheProperties::No)
                 .build()
@@ -202,7 +194,6 @@ where
         let shared_connect_notify = Arc::clone(&connect_notify);
         let shared_slot = Arc::clone(&slot);
         let shared_new_value_sender = new_value_sender.clone();
-        let shared_dbus_path = dbus_path.clone();
         let shared_bus = bus.clone();
         let recv_task: JoinHandle<()> = tokio::spawn(async move {
             let mut local_last_value: Option<T> = None;
@@ -211,12 +202,6 @@ where
                 shared_bus.clone(),
                 format!("filters/{}", Base::<T>::type_and_name(&shared_name)).as_str(),
             );
-            let iface: zbus::InterfaceRef<SlotInterface<T>> = shared_bus
-                .clone()
-                .object_server()
-                .interface(shared_dbus_path.clone())
-                .await
-                .unwrap();
             loop {
                 let slot_guard = shared_slot.read().await; // Create a binding for the read guard
                 let new_value = tokio::select! {
@@ -235,31 +220,12 @@ where
                             std::io::ErrorKind::Other,
                             "Connecting to other signal, let's try receiving from it",
                         )) as Box<dyn std::error::Error + Send + Sync>)
-                    },
-                    result = tinker_channel_receiver.recv() => {
-                        match result {
-                            Some(value) => {
-                                Ok(value)
-                            }
-                            None => {
-                                Err(Box::new(std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    "New value channel ended",
-                                )) as Box<dyn std::error::Error + Send + Sync>)
-                            }
-                        }
                     }
                 };
 
                 match new_value {
                     Ok(filtered) => {
                         local_last_value = Some(filtered);
-
-                        // let _ = SlotInterface::value(
-                        //     &iface.signal_context(),
-                        //     local_last_value.as_ref().unwrap(),
-                        // )
-                        // .await;
                         debug!(target: &shared_log_key, "Value sent: {:?}", local_last_value);
                         let _ = shared_new_value_sender
                             .send(local_last_value.clone())
@@ -363,97 +329,6 @@ where
         self.connect_change_task.abort();
         self.recv_task.abort();
     }
-}
-
-mod detail {
-    pub trait SupportedTypes {
-        fn to_value(&self) -> zbus::zvariant::Value<'static>;
-    }
-    // make macro to impl for all types
-    macro_rules! impl_supported_types {
-        ($($t:ty),*) => {
-            $(
-                impl SupportedTypes for $t {
-                    fn to_value(&self) -> zbus::zvariant::Value<'static> {
-                        zbus::zvariant::Value::from(*self)
-                    }
-                }
-            )*
-        };
-    }
-    impl_supported_types!(bool, i64, u64, f64);
-    impl SupportedTypes for String {
-        fn to_value(&self) -> zbus::zvariant::Value<'static> {
-            zbus::zvariant::Value::from(self.clone())
-        }
-    }
-}
-
-struct SlotInterface<T> {
-    new_value_recv: watch::Receiver<Option<T>>,
-    tinker_channel: tokio_mpsc::Sender<T>,
-    log_key: String,
-}
-
-impl<T: detail::SupportedTypes + zbus::zvariant::Type + Sync + Send + 'static> SlotInterface<T> {
-    pub fn new(
-        new_value_recv: watch::Receiver<Option<T>>,
-        tinker_channel: tokio_mpsc::Sender<T>,
-        key: &str,
-    ) -> Self {
-        Self {
-            new_value_recv,
-            tinker_channel,
-            log_key: key.to_string(),
-        }
-    }
-}
-
-#[interface(name = "is.centroid.Slot")]
-impl<T> SlotInterface<T>
-where
-    T: Clone
-        + detail::SupportedTypes
-        + zbus::zvariant::Type
-        + Sync
-        + Send
-        + 'static
-        + JsonSchema
-        + for<'a> zbus::export::serde::de::Deserialize<'a>
-        + zbus::export::serde::ser::Serialize,
-{
-    #[zbus(property, name = "Value")]
-    fn value_prop(&self) -> Result<zbus::zvariant::Value<'static>, zbus::fdo::Error> {
-        let value = self.new_value_recv.borrow();
-        if let Some(ref value) = *value {
-            return Ok(value.to_value());
-        }
-        Err(zbus::fdo::Error::Failed("No value set".into()))
-    }
-    #[zbus(property(emits_changed_signal = "const"))]
-    fn schema(&self) -> Result<String, zbus::fdo::Error> {
-        serde_json::to_string_pretty(&schemars::schema_for!(T)).map_err(|e| {
-            let err_msg = format!("Error serializing to JSON schema: {}", e);
-            log!(target: &self.log_key, Level::Error, "{}", err_msg);
-            zbus::fdo::Error::Failed(err_msg)
-        })
-    }
-    fn last_value(&self) -> Result<T, zbus::fdo::Error> {
-        match *self.new_value_recv.borrow() {
-            Some(ref value) => Ok(value.clone()),
-            None => Err(zbus::fdo::Error::Failed("No value set".into())),
-        }
-    }
-    async fn tinker(&mut self, value: T) -> Result<(), zbus::fdo::Error> {
-        self.tinker_channel.send(value).await.map_err(|e| {
-            let err_msg = format!("Error sending new value: {}", e);
-            log!(target: &self.log_key, Level::Error, "{}", err_msg);
-            zbus::fdo::Error::Failed(err_msg)
-        })?;
-        Ok(())
-    }
-    #[zbus(signal)]
-    async fn value(signal_ctxt: &zbus::SignalContext<'_>, val: &T) -> zbus::Result<()>;
 }
 
 pub struct SlotImpl<T> {
@@ -597,14 +472,12 @@ where
 }
 
 pub struct Signal<T: TypeName> {
-    signal: Arc<TMutex<SignalImpl<T>>>,
-    full_name: String,
-    base: Arc<Mutex<Base<T>>>,
-    dbus_path: Arc<Mutex<String>>,
-    bus: zbus::Connection,
-    #[allow(dead_code)]
-    log_key: String,
+    base: Base<T>,
+    monitor: Option<mpsc::Receiver<SocketEvent>>,
+    value_sender: watch::Sender<Option<T>>,
     init_task: Option<tokio::task::JoinHandle<()>>,
+    monitor_task: tokio::task::JoinHandle<()>,
+    register_task: tokio::task::JoinHandle<()>,
 }
 
 impl<T> Signal<T>
@@ -614,45 +487,108 @@ where
         + SerializeSize
         + Serialize
         + Deserialize
-        + Send
-        + Sync
-        + 'static //
-        // todo is this proper below
-        + Type
-        + Clone
-        + detail::SupportedTypes
-        + JsonSchema
         + std::fmt::Debug
-        + for<'a> zbus::export::serde::de::Deserialize<'a>
-        + zbus::export::serde::ser::Serialize,
+        + Sync
+        + Send
+        + 'static,
 {
-    pub fn new(bus: zbus::Connection, base: Base<T>) -> Self {
-        let log_key_cp = base.log_key.clone();
+    pub fn new(base: Base<T>, bus: Option<zbus::Connection>) -> Self {
+        let (value_sender, mut value_receiver) = watch::channel(None as Option<T>);
+
+        let (mut sock_sender, mut sock_receiver) = mpsc::channel::<PubSocket>(1);
+        let path = base.path();
+        let endpoint = base.endpoint();
         let log_key = base.log_key.clone();
-        let client = SignalInterface::new(Arc::clone(&base.value), &log_key);
-        let dbus_path = format!(
-            "/is/centroid/Signal/{}",
-            Base::<T>::type_and_name(&base.name)
-        );
-        let dbus_path_cp = dbus_path.clone();
-        let bus_cp = bus.clone();
-        let base_cp = base.clone();
-        let signal = Arc::new(TMutex::new(SignalImpl::new(base_cp)));
-        let signal_cp = Arc::clone(&signal);
+        let init_task = tokio::spawn(async move {
+            let mut sock = PubSocket::new();
+            if path.exists() {
+                std::fs::remove_file(path)
+                    .expect(format!("Failed to remove file: {}", endpoint).as_str());
+            }
+            sock.bind(&endpoint)
+                .await
+                .map_err(|e| {
+                    log!(target: &log_key, Level::Error, "Failed to bind to endpoint: {}", e);
+                    e
+                })
+                .expect(format!("Failed to bind to endpoint: {}", endpoint).as_str());
+            trace!(target: &log_key, "Bound to endpoint: {}", endpoint);
+            sock_sender.send(sock).await.expect("Failed to send socket");
+        });
+
+        let log_key = base.log_key.clone();
+        let monitor_task = tokio::spawn(async move {
+            let mut sock: PubSocket = loop {
+                if let Some(sock) = sock_receiver.next().await {
+                    break sock;
+                }
+            };
+
+            let mut monitor = sock.monitor();
+
+            loop {
+                select! {
+                    // TODO let's use different zmq topic to propagate the last value
+                    event = monitor.next() => {
+                        match event {
+                            Some(SocketEvent::Accepted { .. }) => {
+                                let mut buffer: Vec<u8> = Vec::new();
+                                {
+                                    // this is scoped to prevent holding onto borrow over await point
+                                    let value = value_receiver.borrow();
+                                    trace!(target: &log_key, "Accepted event, last value: {:?}", value);
+                                    if value.is_none() {
+                                        continue;
+                                    }
+                                    let packet = SerializePacket::new(value.as_ref().unwrap());
+                                    packet.serialize(&mut buffer).expect("Serialization failed");
+                                }
+                                // TODO use ZMQ_EVENT_HANDSHAKE_SUCCEEDED and throw this sleep out
+                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                                sock.send(ZmqMessage::from(buffer))
+                                    .await
+                                    .expect("Failed to send value");
+                            }
+                            other_event => {
+                                log!(target: &log_key, Level::Info,
+                                    "Other event: {:?}, last value: {:?}",
+                                    other_event,
+                                    value_receiver.borrow()
+                                );
+                            }
+                        }
+                    },
+                    _ = value_receiver.changed() => {
+                        let mut buffer: Vec<u8> = Vec::new();
+                        {
+                            // this is scoped to prevent holding onto borrow over await point
+                            let value = value_receiver.borrow_and_update();
+                            if value.is_none() {
+                                continue;
+                            }
+                            let packet = SerializePacket::new(value.as_ref().unwrap());
+                            packet.serialize(&mut buffer).expect("Serialization failed");
+                        }
+                        if !buffer.is_empty() {
+                            sock.send(ZmqMessage::from(buffer))
+                                .await
+                            .expect("Failed to send value");
+                        }
+                    }
+                };
+            }
+        });
 
         let name = base.full_name();
         let description = base.description.clone().unwrap_or(String::new());
-
-        let init_task = tokio::spawn(async move {
-            let _ = signal_cp.lock().await.init().await;
-        });
-        tokio::spawn(async move {
-            let _ = bus_cp
-                .object_server()
-                .at(dbus_path_cp, client)
-                .await
-                .expect(&format!("Error registering object: {}", log_key_cp));
-            let proxy = IpcRulerProxy::builder(&bus_cp)
+        let log_key = base.log_key.clone();
+        let register_task = tokio::spawn(async move {
+            if bus.is_none() {
+                return;
+            }
+            let bus = bus.unwrap();
+            let proxy = IpcRulerProxy::builder(&bus)
                 .cache_properties(zbus::CacheProperties::No)
                 .build()
                 .await
@@ -664,236 +600,48 @@ where
                 if res.is_ok() {
                     break;
                 } else {
-                    log!(target: &log_key_cp, Level::Trace,
-                "Signal Registration failed: '{}', will try again in 1s", res.err().unwrap());
+                    trace!(target: &log_key, "Signal Registration failed: '{}', will try again in 1s", res.err().unwrap());
                     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                 }
             }
         });
         Self {
-            signal,
-            full_name: base.full_name(),
-            base: Arc::new(Mutex::new(base)),
-            dbus_path: Arc::new(Mutex::new(dbus_path)),
-            bus,
-            log_key,
+            base,
+            monitor: None,
+            value_sender,
             init_task: Some(init_task),
+            monitor_task,
+            register_task,
         }
     }
 
-    // Use to wait for the constructor to finish
-    pub async fn init_task(&mut self) -> Result<(), tokio::task::JoinError> {
-        self.init_task
-            .take()
-            .expect("Init task has not been started")
-            .await
-    }
-
-    async fn async_send_impl(
-        signal: Arc<TMutex<SignalImpl<T>>>,
-        base: Arc<Mutex<Base<T>>>,
-        bus: zbus::Connection,
-        dbus_path: Arc<Mutex<String>>,
-        value: T,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        signal.lock().await.send(value).await?;
-        // let base = base.lock();
-        // let value_guard = base.value.read().await;
-        // let value_ref = value_guard.as_ref().unwrap();
-
-        // let iface: Result<zbus::InterfaceRef<SignalInterface<T>>, zbus::Error> = bus
-        //     .object_server()
-        //     .interface(dbus_path.lock().as_str())
-        //     .await;
-        // if let Ok(iface) = iface {
-        //     SignalInterface::value(&iface.signal_context(), value_ref).await?;
-        // } else {
-        //     // This happens when the signal has not been registered yet,
-        //     // which can happen if the signal is sent before the interface is registered
-        //     // We simply ignore this case as the interface will be registered soon
-        //     log!(target: &base.log_key, Level::Info,
-        //         "Error sending signal value: {}", iface.err().unwrap());
-        // }
+    pub async fn async_send(&mut self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.value_sender.send(Some(value))?;
+        tokio::task::yield_now().await;
         Ok(())
     }
 
     pub fn send(&mut self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let shared_signal = Arc::clone(&self.signal);
-        let shared_base = Arc::clone(&self.base);
-        let dbus_path = Arc::clone(&self.dbus_path);
-        let bus = self.bus.clone();
-        tokio::spawn(async move {
-            Self::async_send_impl(shared_signal, shared_base, bus, dbus_path, value).await
-        });
-        Ok(())
-    }
-
-    pub async fn async_send(&mut self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Self::async_send_impl(
-            Arc::clone(&self.signal),
-            Arc::clone(&self.base),
-            self.bus.clone(),
-            self.dbus_path.clone(),
-            value,
-        )
-        .await
-    }
-    pub fn full_name(&self) -> &str {
-        &self.full_name
-    }
-}
-
-struct SignalInterface<T> {
-    last_value: Arc<RwLock<Option<T>>>,
-    log_key: String,
-}
-
-impl<T: detail::SupportedTypes + zbus::zvariant::Type + Sync + Send + 'static> SignalInterface<T> {
-    pub fn new(last_value: Arc<RwLock<Option<T>>>, key: &str) -> Self {
-        Self {
-            last_value,
-            log_key: key.to_string(),
-        }
-    }
-}
-
-#[interface(name = "is.centroid.Signal")]
-impl<T> SignalInterface<T>
-where
-    T: Clone
-        + detail::SupportedTypes
-        + zbus::zvariant::Type
-        + Sync
-        + Send
-        + 'static
-        + JsonSchema
-        + for<'a> zbus::export::serde::de::Deserialize<'a>
-        + zbus::export::serde::ser::Serialize,
-{
-    #[zbus(property, name = "Value")]
-    async fn value_prop(&self) -> Result<zbus::zvariant::Value<'static>, zbus::fdo::Error> {
-        let guard = self.last_value.read().await;
-
-        match *guard {
-            Some(ref value) => Ok(value.to_value()),
-            None => Err(zbus::fdo::Error::Failed("No value set".into())),
-        }
-    }
-    #[zbus(property(emits_changed_signal = "const"))]
-    async fn schema(&self) -> Result<String, zbus::fdo::Error> {
-        serde_json::to_string_pretty(&schemars::schema_for!(T)).map_err(|e| {
-            let err_msg = format!("Error serializing to JSON schema: {}", e);
-            log!(target: &self.log_key, Level::Error, "{}", err_msg);
-            zbus::fdo::Error::Failed(err_msg)
-        })
-    }
-    async fn last_value(&self) -> Result<T, zbus::fdo::Error> {
-        let guard = self.last_value.read().await;
-        match *guard {
-            Some(ref value) => Ok(value.clone()),
-            None => Err(zbus::fdo::Error::Failed("No value set".into())),
-        }
-    }
-    #[zbus(signal)]
-    async fn value(signal_ctxt: &zbus::SignalContext<'_>, val: &T) -> zbus::Result<()>;
-}
-
-pub struct SignalImpl<T: TypeName> {
-    base: Base<T>,
-    sock: Arc<Mutex<PubSocket>>,
-    monitor: Option<mpsc::Receiver<SocketEvent>>,
-}
-
-impl<T> SignalImpl<T>
-where
-    T: TypeName
-        + TypeIdentifier
-        + SerializeSize
-        + Serialize
-        + Deserialize
-        + std::fmt::Debug
-        + std::marker::Sync
-        + std::marker::Send
-        + 'static,
-{
-    pub fn new(base: Base<T>) -> Self {
-        Self {
-            base,
-            sock: Arc::new(Mutex::new(PubSocket::new())),
-            monitor: None,
-        }
-    }
-    pub async fn init(&mut self) -> Result<(), Box<dyn Error>> {
-        // Todo cpp azmq does this by itself
-        // We should check whether any PID is binded to the file before removing it
-        // But the bind below fails if the file exists, even though no one is binded to it
-        let path = self.base.path();
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
-        self.sock.lock().bind(self.base.endpoint().as_str()).await?;
-        self.monitor = Some(self.sock.lock().monitor());
-
-        let shared_value = Arc::clone(&self.base.value);
-        let shared_sock = Arc::clone(&self.sock);
-        let log_key = self.base.log_key.clone();
-        if let Some(mut receiver) = self.monitor.take() {
-            tokio::spawn(async move {
-                while let Some(event) = receiver.next().await {
-                    match event {
-                        SocketEvent::Accepted { .. } => {
-                            log!(target: &log_key, Level::Trace,
-                                "Accepted event, last value: {:?}", shared_value.read().await
-                            );
-                            let mut locked_sock = shared_sock.lock();
-                            let mut buffer = Vec::new();
-                            {
-                                let value = shared_value.read().await;
-                                if value.is_none() {
-                                    return Ok(()) as Result<(), ZmqError>;
-                                }
-                                let packet = SerializePacket::new(value.as_ref().unwrap());
-                                packet.serialize(&mut buffer).expect("Serialization failed");
-                            }
-                            // TODO use ZMQ_EVENT_HANDSHAKE_SUCCEEDED and throw this sleep out
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                            locked_sock.send(ZmqMessage::from(buffer)).await?;
-                        }
-                        other_event => {
-                            log!(target: &log_key, Level::Info,
-                                "Other event: {:?}, last value: {:?}",
-                                other_event,
-                                shared_value.read().await
-                            );
-                        }
-                    }
-                }
-                println!("Receiver has been dropped. Task terminating.");
-                Ok(())
-            });
-        }
-        Ok(())
-    }
-    pub async fn send(&mut self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let mut buffer = Vec::new();
-        {
-            let packet = SerializePacket::new(&value);
-            packet.serialize(&mut buffer).expect("Serialization failed");
-        }
-        *self.base.value.write().await = Some(value);
-        self.sock.lock().send(ZmqMessage::from(buffer)).await?;
+        self.value_sender.send(Some(value))?;
         Ok(())
     }
 
     pub fn full_name(&self) -> String {
         self.base.full_name()
     }
+
+    pub async fn init_task(&mut self) -> Result<(), tokio::task::JoinError> {
+        self.init_task.take().unwrap().await
+    }
 }
 
-impl<T: TypeName> Drop for SignalImpl<T> {
+impl<T: TypeName> Drop for Signal<T> {
     fn drop(&mut self) {
-        let sock = self.sock.lock();
-        drop(sock);
+        if let Some(init_task) = self.init_task.take() {
+            init_task.abort();
+        }
+        self.monitor_task.abort();
+        self.register_task.abort();
         let file = self.base.endpoint();
         std::fs::remove_file(file).unwrap_or(());
     }
