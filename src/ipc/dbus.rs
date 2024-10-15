@@ -1,4 +1,4 @@
-use log::{error, log, Level};
+use log::{error, log, trace, Level};
 use schemars::JsonSchema;
 use tokio::sync::watch;
 use zbus::interface;
@@ -47,6 +47,20 @@ impl<
         let path_cp = path.clone();
         let watch_task = tokio::spawn(async move {
             loop {
+                let iface = dbus_cp
+                    .clone()
+                    .object_server()
+                    .interface(path_cp.clone())
+                    .await;
+                if iface.is_err() {
+                    trace!(
+                        "Error getting interface: {} probably not started yet",
+                        path_cp
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    continue;
+                }
+                let iface: zbus::InterfaceRef<SignalInterface<T>> = iface.unwrap();
                 watch_cp
                     .changed()
                     .await
@@ -55,12 +69,6 @@ impl<
                 let copy_val: Option<T> = watch_cp.borrow_and_update().clone();
                 match copy_val {
                     Some(ref value) => {
-                        let iface: zbus::InterfaceRef<SignalInterface<T>> = dbus_cp
-                            .clone()
-                            .object_server()
-                            .interface(path_cp.clone())
-                            .await
-                            .expect("Error getting interface");
                         SignalInterface::value(&iface.signal_context(), value)
                             .await
                             .expect("Error sending value");

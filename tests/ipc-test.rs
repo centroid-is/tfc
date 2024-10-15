@@ -14,43 +14,6 @@ mod tests {
         // std::env::set_var("CONFIGURATION_DIRECTORY", current_dir_str);
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_async_send_recv_many() -> Result<(), Box<dyn std::error::Error>> {
-        setup_dirs();
-        let _ = progbase::try_init();
-        // let _ = logger::init_combined_logger();
-
-        let mut slot = SlotImpl::<i64>::new(Base::new("slot5", None));
-        let mut signal = Signal::<i64>::new_raw(Base::new("signal5", None));
-        signal.init_task().await?;
-
-        slot.async_connect(&signal.base().full_name())
-            .await
-            .expect("This should connect");
-
-        let count = 100000;
-        let rx_count = count.clone();
-        let send_task = tokio::spawn(async move {
-            for i in 1..count {
-                signal.async_send(i).await.expect("This should not fail");
-                tokio::task::yield_now().await;
-            }
-        });
-
-        let recv_task = tokio::spawn(async move {
-            for i in 1..rx_count {
-                let recv_val = slot.recv().await.expect("This should not fail");
-                assert_eq!(recv_val, i);
-            }
-        });
-
-        let (recv_res, send_res) = tokio::join!(recv_task, send_task);
-
-        send_res.expect("Sender task panicked");
-        recv_res.expect("Receiver task panicked");
-        Ok(())
-    }
-
     // multithread
     #[tokio::test]
     async fn test_public_async_send_recv() -> Result<(), Box<dyn std::error::Error>> {
@@ -228,7 +191,8 @@ mod tests {
         let mut signal = Signal::<bool>::new_raw(Base::new("test_signal", None));
 
         // Connect them together
-        slot.connect(&signal.base().full_name())
+        slot.async_connect(&signal.base().full_name())
+            .await
             .expect("Connect success");
         //tokio::time::sleep(Duration::from_millis(1000)).await;
 

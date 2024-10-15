@@ -1,9 +1,8 @@
 use tfc::confman::ConfMan;
-use tfc::ipc::{dbus, Base, Signal, Slot, SlotImpl};
+use tfc::ipc::{dbus, Base, Signal, Slot};
 use tfc::logger;
 use tfc::progbase;
 
-use futures::StreamExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::future::pending;
@@ -73,8 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // let _ = Application::new(&i64_signal.full_name());
 
-    let mut i64_raw_slot = SlotImpl::<i64>::new(Base::new("hello", None));
-    let mut bool_slot = Slot::<bool>::new(_conn.clone(), Base::new("bar", None));
+    let bool_slot = Slot::<bool>::new(_conn.clone(), Base::new("bar", None));
     let mut i64_slot = Slot::<i64>::new(_conn.clone(), Base::new("bar", None));
     let mut i64_slot_stream = Slot::<i64>::new(_conn.clone(), Base::new("stream", None));
     i64_slot.recv(Box::new(|&val| {
@@ -88,9 +86,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _conn.clone(),
         i64_slot_stream.channel("dbus"),
     );
-    let _ = i64_raw_slot.connect(&i64_signal.base().full_name());
-    let _ = i64_slot.connect(&i64_signal.base().full_name());
-    let _ = i64_slot_stream.connect(&i64_signal.base().full_name());
+    let _ = i64_slot.async_connect(&i64_signal.base().full_name()).await;
+    let _ = i64_slot_stream
+        .async_connect(&i64_signal.base().full_name())
+        .await;
     println!("Slot connected");
 
     let mut stream = i64_slot_stream.subscribe();
@@ -103,14 +102,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 val,
                 stream.borrow_and_update()
             );
-        }
-    });
-
-    tokio::spawn(async move {
-        loop {
-            println!("awaiting new val");
-            let val = i64_raw_slot.recv().await;
-            println!("Raw slot val: {:?}", val);
         }
     });
 
