@@ -21,10 +21,10 @@ mod tests {
         // let _ = logger::init_combined_logger();
 
         let mut slot = SlotImpl::<i64>::new(Base::new("slot5", None));
-        let mut signal = Signal::<i64>::new(Base::new("signal5", None));
+        let mut signal = Signal::<i64>::new_raw(Base::new("signal5", None));
         signal.init_task().await?;
 
-        slot.async_connect(&signal.full_name())
+        slot.async_connect(&signal.base().full_name())
             .await
             .expect("This should connect");
 
@@ -66,13 +66,13 @@ mod tests {
             .await?;
 
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot6", None));
-        let mut signal = Signal::<bool>::new(Base::new("signal6", None));
+        let mut signal = Signal::<bool>::new_raw(Base::new("signal6", None));
         log::info!("Waiting for init");
         signal.init_task().await?;
         log::info!("Init complete");
 
         log::info!("Connecting");
-        slot.async_connect(&signal.full_name())
+        slot.async_connect(&signal.base().full_name())
             .await
             .expect("This should connect");
         log::info!("Connected");
@@ -126,13 +126,13 @@ mod tests {
             .await?;
 
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot7", None));
-        let mut signal = Signal::<bool>::new(Base::new("signal7", None));
+        let mut signal = Signal::<bool>::new_raw(Base::new("signal7", None));
         log::info!("Waiting for init");
         signal.init_task().await?;
         log::info!("Init complete");
 
         log::info!("Connecting");
-        slot.async_connect(&signal.full_name())
+        slot.async_connect(&signal.base().full_name())
             .await
             .expect("This should connect");
 
@@ -189,10 +189,10 @@ mod tests {
             .await?;
 
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("slot8", None));
-        let mut signal = Signal::<bool>::new(Base::new("signal8", None));
+        let mut signal = Signal::<bool>::new_raw(Base::new("signal8", None));
         signal.init_task().await?;
 
-        slot.async_connect(&signal.full_name())
+        slot.async_connect(&signal.base().full_name())
             .await
             .expect("This should connect");
 
@@ -225,10 +225,11 @@ mod tests {
             .await
             .expect("Build success");
         let mut slot = Slot::<bool>::new(bus.clone(), Base::new("test_slot", None));
-        let mut signal = Signal::<bool>::new(Base::new("test_signal", None));
+        let mut signal = Signal::<bool>::new_raw(Base::new("test_signal", None));
 
         // Connect them together
-        slot.connect(&signal.full_name()).expect("Connect success");
+        slot.connect(&signal.base().full_name())
+            .expect("Connect success");
         //tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Send some values and check they are correct

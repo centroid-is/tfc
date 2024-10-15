@@ -498,7 +498,12 @@ where
         + Send
         + 'static,
 {
-    pub fn new(base: Base<T>) -> Self {
+    pub fn new(dbus: zbus::Connection, base: Base<T>) -> Self {
+        let this = Self::new_raw(base);
+        this.register(dbus)
+    }
+
+    pub fn new_raw(base: Base<T>) -> Self {
         let (value_sender, mut value_receiver) = watch::channel(None as Option<T>);
 
         let (mut sock_sender, mut sock_receiver) = mpsc::channel::<PubSocket>(1);

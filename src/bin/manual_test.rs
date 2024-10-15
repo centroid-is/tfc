@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _config = ConfMan::<Greeter>::new(_conn.clone(), "greeterfu_uf0");
 
-    let mut i64_signal = Signal::<i64>::new(Base::new("foo", None)).register(_conn.clone());
+    let mut i64_signal = Signal::<i64>::new(_conn.clone(), Base::new("foo", None));
 
     // let _ = Application::new(&i64_signal.full_name());
 
