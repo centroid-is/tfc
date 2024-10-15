@@ -217,6 +217,7 @@ where
             if res.is_ok() {
                 break;
             } else {
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                 trace!(target: &log_key, "Failed to connect to: {}", socket_path);
             }
         }
