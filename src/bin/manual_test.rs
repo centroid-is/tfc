@@ -86,10 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _conn.clone(),
         i64_slot_stream.channel("dbus"),
     );
-    let _ = i64_slot.async_connect(&i64_signal.base().full_name()).await;
-    let _ = i64_slot_stream
-        .async_connect(&i64_signal.base().full_name())
-        .await;
+    let full_name = i64_signal.base().full_name();
+    let _ = i64_slot.async_connect(&full_name).await;
+    let _ = i64_slot_stream.async_connect(&full_name).await;
     println!("Slot connected");
 
     let mut stream = i64_slot_stream.subscribe();
@@ -115,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for i in 1..1024 {
         i64_signal.async_send(i).await.expect("Failed to send");
-        println!("The value of i is: {}", i);
+        println!("Sending value: {}", i);
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
 
