@@ -69,6 +69,7 @@ pub struct Slot<T> {
     new_value_sender: watch::Sender<Option<T>>,
     recv_task: Option<JoinHandle<()>>,
     register_task: Option<JoinHandle<()>>,
+    connection_change_task: Option<JoinHandle<()>>,
 }
 
 impl<T> Slot<T>
@@ -95,6 +96,7 @@ where
             new_value_sender,
             recv_task: None,
             register_task: None,
+            connection_change_task: None,
         };
         let mut this = this.register(dbus.clone());
         this.start_recv_task(sock_receiver, dbus);
@@ -158,19 +160,24 @@ where
     }
 
     pub fn register(mut self, bus: zbus::Connection) -> Self {
-        let my_name = self.base.full_name();
         let description = self.base.description.clone().unwrap_or(String::new());
         let log_key = self.base.log_key.clone();
         let sock_sender = self.sock_sender.clone();
+        let bus_cp = bus.clone();
+        let full_name = self.base.full_name();
         self.register_task = Some(tokio::spawn(async move {
-            let proxy = IpcRulerProxy::builder(&bus)
+            let proxy = IpcRulerProxy::builder(&bus_cp)
                 .cache_properties(zbus::CacheProperties::No)
                 .build()
                 .await
                 .unwrap();
             loop {
                 let res = proxy
-                    .register_slot(my_name.as_str(), description.as_str(), T::type_identifier())
+                    .register_slot(
+                        full_name.as_str(),
+                        description.as_str(),
+                        T::type_identifier(),
+                    )
                     .await;
                 if res.is_ok() {
                     break;
@@ -179,6 +186,16 @@ where
                     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                 }
             }
+        }));
+
+        let my_name = self.base.full_name();
+        let log_key = self.base.log_key.clone();
+        self.connection_change_task = Some(tokio::spawn(async move {
+            let proxy = IpcRulerProxy::builder(&bus)
+                .cache_properties(zbus::CacheProperties::No)
+                .build()
+                .await
+                .unwrap();
             loop {
                 let res = proxy.receive_connection_change().await;
                 if res.is_ok() {
@@ -197,6 +214,7 @@ where
                 }
             }
         }));
+
         self
     }
 
@@ -286,6 +304,20 @@ where
             Base::new(&self.base.name, Some(description.as_str()))
         } else {
             Base::new(&self.base.name, None)
+        }
+    }
+}
+
+impl<T> Drop for Slot<T> {
+    fn drop(&mut self) {
+        if let Some(recv_task) = self.recv_task.take() {
+            recv_task.abort();
+        }
+        if let Some(register_task) = self.register_task.take() {
+            register_task.abort();
+        }
+        if let Some(connection_change_task) = self.connection_change_task.take() {
+            connection_change_task.abort();
         }
     }
 }
