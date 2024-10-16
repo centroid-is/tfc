@@ -159,6 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         slot_node,
         tfc_folder_id,
         node_manager.clone(),
+        handle.subscriptions().clone(),
     );
 
     let full_name = i64_signal.base().full_name();
