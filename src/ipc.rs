@@ -17,6 +17,7 @@ use crate::ipc_ruler_client::IpcRulerProxy;
 use crate::progbase;
 
 pub mod dbus;
+pub mod opcua;
 
 const FILE_PREFIX: &'static str = "ipc://";
 const FILE_PATH: &'static str = "/var/run/tfc/";
@@ -223,6 +224,9 @@ where
         mut sock_sender: mpsc::Sender<SubSocket>,
         signal_name: &str,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if signal_name.is_empty() {
+            return Err("Signal name is empty".into());
+        }
         let mut sock = SubSocket::new();
         let socket_path = endpoint(signal_name);
         trace!(target: &log_key, "Trying to connect to: {}", socket_path);
