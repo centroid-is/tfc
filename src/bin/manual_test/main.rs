@@ -127,22 +127,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut address_space = address_space.write();
 
         address_space.add_folder(&tfc_folder_id, "TFC", "TFC", &NodeId::objects_folder_id());
-
-        // VariableBuilder::new(&slot_node, i64_slot.base().name, i64_slot.base().name)
-        //     .data_type(opcua::types::DataTypeId::Int64)
-        //     .writable()
-        //     .organized_by(&tfc_folder_id)
-        //     .insert(&mut address_space);
-
-        // let _ = address_space.add_variables(
-        //     vec![Variable::new(
-        //         &signal_node,
-        //         i64_signal.base().name,
-        //         i64_signal.base().name,
-        //         0_i64,
-        //     )],
-        //     &tfc_folder_id,
-        // );
     }
 
     tfc::ipc::opcua::SignalInterface::register_node(
@@ -175,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "Watch val: {:?}, val: {:?}",
                 val,
-                stream.borrow_and_update()
+                *stream.borrow_and_update()
             );
         }
     });
@@ -196,8 +180,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // add_example_variables(ns, node_manager, handle.subscriptions().clone());
-
     tokio::spawn(async move {
         server.run().await.expect("Failed to run server");
     });
@@ -206,109 +188,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     pending::<()>().await;
 
     Ok(())
-}
-
-fn add_example_variables(
-    ns: u16,
-    manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
-    subscriptions: Arc<SubscriptionCache>,
-) {
-    // These will be the node ids of the new variables
-    let v1_node = NodeId::new(ns, "v1");
-    let v2_node = NodeId::new(ns, "v2");
-    let v3_node = NodeId::new(ns, "v3");
-    let v4_node = NodeId::new(ns, "v4");
-    let v5_node = NodeId::new(ns, "v5");
-
-    let address_space = manager.address_space();
-
-    // The address space is guarded so obtain a lock to change it
-    {
-        let mut address_space = address_space.write();
-
-        // Create a sample folder under objects folder
-        let sample_folder_id = NodeId::new(ns, "folder");
-        address_space.add_folder(
-            &sample_folder_id,
-            "Sample",
-            "Sample",
-            &NodeId::objects_folder_id(),
-        );
-
-        // Add some variables to our sample folder. Values will be overwritten by the timer
-        let _ = address_space.add_variables(
-            vec![
-                Variable::new(&v1_node, "v1", "v1", 0_i32),
-                Variable::new(&v2_node, "v2", "v2", false),
-                Variable::new(&v3_node, "v3", "v3", UAString::from("")),
-                Variable::new(&v4_node, "v4", "v4", 0f64),
-                Variable::new(&v5_node, "v5", "v5", "Static Value"),
-            ],
-            &sample_folder_id,
-        );
-    }
-
-    // Depending on your choice of node manager, you can use different methods to provide the value of a node.
-    // The simple node manager lets you set dynamic getters:
-    {
-        let counter = AtomicI32::new(0);
-        manager
-            .inner()
-            .add_read_callback(v3_node.clone(), move |_, _, _| {
-                Ok(DataValue::new_now(UAString::from(format!(
-                    "Hello World times {}",
-                    counter.fetch_add(1, Ordering::Relaxed)
-                ))))
-            });
-
-        let start_time = Instant::now();
-        manager
-            .inner()
-            .add_read_callback(v4_node.clone(), move |_, _, _| {
-                let elapsed = (Instant::now() - start_time).as_millis();
-                let moment = (elapsed % 10_000) as f64 / 10_000.0;
-                Ok(DataValue::new_now(
-                    (2.0 * std::f64::consts::PI * moment).sin(),
-                ))
-            });
-    }
-
-    // Alternatively, you can set the value in the node manager on a timer.
-    // This is typically a better choice if updates are relatively rare, and you always know when
-    // an update occurs. Fundamentally, the server is event-driven. When using a getter like above,
-    // the node manager will sample the value if a user subscribes to it. When publishing a value like below,
-    // clients will only be notified when a change actually happens, but we will need to store each new value.
-
-    // Typically, you will use a getter or a custom node manager for dynamic values, and direct modification for
-    // properties or other less-commonly changing values.
-    {
-        // Store a counter and a flag in a tuple
-        let counter = AtomicI32::new(0);
-        let flag = AtomicBool::new(false);
-        tokio::task::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(300));
-            loop {
-                interval.tick().await;
-
-                manager
-                    .set_values(
-                        &subscriptions,
-                        [
-                            (
-                                &v1_node,
-                                None,
-                                DataValue::new_now(counter.fetch_add(1, Ordering::Relaxed)),
-                            ),
-                            (
-                                &v2_node,
-                                None,
-                                DataValue::new_now(flag.fetch_xor(true, Ordering::Relaxed)),
-                            ),
-                        ]
-                        .into_iter(),
-                    )
-                    .unwrap();
-            }
-        });
-    }
 }
