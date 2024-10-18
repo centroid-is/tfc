@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+
 #[derive(Deserialize, Serialize, JsonSchema, Default)]
 struct Greeter {
     count: u64,
@@ -29,6 +30,8 @@ struct Greeter {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    console_subscriber::init();
+
     println!("Begin");
     progbase::init();
     let _ = logger::init_combined_logger();
