@@ -1,7 +1,7 @@
 use futures::stream::StreamExt;
 use futures::SinkExt;
 use futures_channel::mpsc;
-use log::{debug, error, log, trace, Level};
+use log::{debug, error, log, trace, warn, Level};
 use quantities::mass::Mass;
 use std::marker::PhantomData;
 use std::{error::Error, io, path::PathBuf};
@@ -17,11 +17,16 @@ use crate::ipc_ruler_client::IpcRulerProxy;
 use crate::progbase;
 
 pub mod dbus;
+pub mod opcua;
 
-const FILE_PREFIX: &'static str = "ipc://";
-const FILE_PATH: &'static str = "/var/run/tfc/";
+const ZMQ_PREFIX: &'static str = "ipc://";
+fn path() -> PathBuf {
+    const FILE_PATH: &'static str = "/var/run/tfc/";
+    PathBuf::from(std::env::var("RUNTIME_DIRECTORY").unwrap_or_else(|_| FILE_PATH.to_string()))
+}
 fn endpoint(file_name: &str) -> String {
-    format!("{}{}{}", FILE_PREFIX, FILE_PATH, file_name)
+    let path = path().join(file_name);
+    format!("{}{}", ZMQ_PREFIX, path.display())
 }
 
 #[derive(Clone)]
@@ -57,9 +62,7 @@ impl<T: TypeName> Base<T> {
         endpoint(&self.full_name())
     }
     pub fn path(&self) -> PathBuf {
-        let runtime_dir =
-            std::env::var("RUNTIME_DIRECTORY").unwrap_or_else(|_| FILE_PATH.to_string());
-        PathBuf::from(format!("{}{}", runtime_dir, self.full_name()))
+        path().join(self.full_name())
     }
 }
 
@@ -223,22 +226,32 @@ where
         mut sock_sender: mpsc::Sender<SubSocket>,
         signal_name: &str,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if signal_name.is_empty() {
+            return Err("Signal name is empty".into());
+        }
         let mut sock = SubSocket::new();
         let socket_path = endpoint(signal_name);
-        trace!(target: &log_key, "Trying to connect to: {}", socket_path);
+        debug!(target: &log_key, "Trying to connect to: {}", socket_path);
         loop {
-            let res = tokio::time::timeout(
-                tokio::time::Duration::from_millis(1000),
-                sock.connect(&socket_path),
-            )
-            .await;
-            if res.is_ok() {
-                break;
-            } else {
-                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                trace!(target: &log_key, "Failed to connect to: {}", socket_path);
+            use tokio::time::{sleep, timeout, Duration};
+
+            match timeout(Duration::from_millis(100), sock.connect(&socket_path)).await {
+                Ok(inner_result) => match inner_result {
+                    Ok(_) => {
+                        break;
+                    }
+                    Err(e) => {
+                        debug!(target: &log_key, "Failed to connect to: {}", e);
+                        sleep(Duration::from_millis(100)).await;
+                    }
+                },
+                Err(_) => {
+                    debug!(target: &log_key, "Timeout connecting to: {}", socket_path);
+                    sleep(Duration::from_millis(100)).await;
+                }
             }
         }
+        debug!(target: &log_key, "Connected to: {}", socket_path);
         sock.subscribe("").await?;
         // little hack to make sure the connection is established
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
@@ -259,12 +272,19 @@ where
         let name = name.to_string();
         tokio::spawn(async move {
             loop {
-                rx.changed().await.expect("Error watching for changes");
-                let value = rx.borrow_and_update().clone();
-                trace!(target: &log_key, "Changed {} value to {:?}", name, value); // OPC-UA Changed Temperature value to 10
-                                                                                   // DBUS-Tinker Changed Temperature value to -1
-                                                                                   // Override current slot value with tinkered value.
-                self_tx.send(value).expect("Error sending value to slot");
+                match rx.changed().await {
+                    Ok(_) => {
+                        let value = rx.borrow_and_update().clone();
+                        trace!(target: &log_key, "Changed {} value to {:?}", name, value); // OPC-UA Changed Temperature value to 10
+                                                                                           // DBUS-Tinker Changed Temperature value to -1
+                                                                                           // Override current slot value with tinkered value.
+                        self_tx.send(value).expect("Error sending value to slot");
+                    }
+                    Err(_) => {
+                        warn!(target: &log_key, "Channel name dropped: {}", name);
+                        break;
+                    }
+                }
             }
         });
         (tx, self.new_value_sender.subscribe())
@@ -287,14 +307,17 @@ where
 
     pub fn recv(&mut self, callback: Box<dyn Fn(&T) + Send + Sync>) {
         let mut watcher = self.subscribe();
-        let log_key = self.base.log_key.clone();
         tokio::spawn(async move {
             loop {
-                let _ = watcher.changed().await.map_err(|_| {
-                    error!(target: &log_key, "recv Error watching for changes");
-                });
-                let value = watcher.borrow();
-                callback(value.as_ref().unwrap());
+                match watcher.changed().await {
+                    Ok(_) => {
+                        let value = watcher.borrow_and_update();
+                        callback(value.as_ref().unwrap());
+                    }
+                    Err(e) => {
+                        panic!("recv Error watching for changes: {}", e);
+                    }
+                }
             }
         });
     }

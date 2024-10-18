@@ -25,3 +25,5 @@ Cargo.lock
 /target
 /tfc-*
 /*.json
+pki
+.vscode
