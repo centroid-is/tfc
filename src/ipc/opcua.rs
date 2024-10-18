@@ -1,94 +1,213 @@
 use crate::ipc::Base;
-use log::{error, trace, warn};
+use crate::ipc::TypeName;
+use log::{trace, warn};
 use opcua::{
     server::{
         address_space::VariableBuilder,
         node_manager::memory::{InMemoryNodeManager, SimpleNodeManagerImpl},
         SubscriptionCache,
     },
-    types::{DataValue, NodeId, Variant},
+    types::{DataTypeId, DataValue, NodeId, Variant},
 };
 use std::marker::PhantomData;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::watch;
 pub struct SignalInterface<T> {
-    value_receiver: watch::Receiver<Option<T>>,
-    log_key: String,
-    watch_task: tokio::task::JoinHandle<()>,
+    base: Base<T>,
+    watch: watch::Receiver<Option<T>>,
+    node_id: NodeId,
+    parent_node_id: Option<NodeId>,
+    name: String,
+    manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+    subscriptions: Arc<SubscriptionCache>,
+    ns: u16,
 }
 
-impl<T: Clone + Copy + Sync + Send + 'static + std::fmt::Debug> SignalInterface<T>
+impl<T: Clone + Sync + Send + 'static + std::fmt::Debug + TypeName + ToDataTypeId>
+    SignalInterface<T>
 where
     opcua::types::Variant: From<T>,
 {
-    pub fn register_node(
+    pub fn new(
         base: Base<T>,
-        mut watch: watch::Receiver<Option<T>>,
-        node: NodeId,
-        parent_node: NodeId,
+        watch: watch::Receiver<Option<T>>,
         manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
         subscriptions: Arc<SubscriptionCache>,
-    ) {
-        let address_space = manager.address_space();
+        ns: u16,
+    ) -> Self {
+        let name = base.name.clone();
+        let node_id_name = format!("Signal/{}", Base::<T>::type_and_name(&base.name));
+        Self {
+            base,
+            watch,
+            node_id: NodeId::new(ns, node_id_name),
+            parent_node_id: None,
+            name,
+            manager,
+            subscriptions,
+            ns,
+        }
+    }
+    pub fn node_id(mut self, node_id: NodeId) -> Self {
+        self.node_id = node_id;
+        self
+    }
+    pub fn parent_node(mut self, parent_node: NodeId) -> Self {
+        self.parent_node_id = Some(parent_node);
+        self
+    }
+    pub fn name(mut self, name: String) -> Self {
+        self.name = name;
+        self
+    }
+    pub fn register(mut self) {
+        if self.parent_node_id.is_none() {
+            let tfc_folder_id = NodeId::new(self.ns, "TFC");
+            let signal_folder_id = NodeId::new(self.ns, "Signal");
+            let type_folder_id = NodeId::new(self.ns, format!("Signal/{}", T::type_name()));
+            {
+                let mut address_space = self.manager.address_space().write();
+                address_space.add_folder(
+                    &tfc_folder_id,
+                    "TFC",
+                    "TFC",
+                    &NodeId::objects_folder_id(),
+                );
+                address_space.add_folder(&signal_folder_id, "Signal", "Signal", &tfc_folder_id);
+                address_space.add_folder(
+                    &type_folder_id,
+                    T::type_name(),
+                    T::type_name(),
+                    &signal_folder_id,
+                );
+            }
+            self.parent_node_id = Some(type_folder_id);
+        }
+
+        let address_space = self.manager.address_space();
         {
             let mut address_space = address_space.write();
-            VariableBuilder::new(&node, &base.name, &base.name)
-                .data_type(opcua::types::DataTypeId::Int64)
+            VariableBuilder::new(&self.node_id, &self.name, &self.name)
+                .data_type(T::to_data_type_id())
                 .writable()
-                .organized_by(&parent_node)
+                .organized_by(self.parent_node_id.as_ref().unwrap())
                 .insert(&mut address_space);
         }
         tokio::spawn(async move {
             loop {
-                watch.changed().await.expect("Failed to wait for change");
-                let val = *watch.borrow_and_update();
+                let val = self.watch.borrow_and_update().clone();
                 match val {
                     Some(val) => {
-                        trace!(target: &base.log_key, "opcua signal is {:?}", val);
+                        trace!(target: &self.base.log_key, "opcua signal is {:?}", val);
 
-                        manager
-                            .set_value(&subscriptions, &node, None, DataValue::new_now(val))
+                        self.manager
+                            .set_value(
+                                &self.subscriptions,
+                                &self.node_id,
+                                None,
+                                DataValue::new_now(val),
+                            )
                             .expect("Failed to set value");
                     }
                     None => {
-                        trace!(target: &base.log_key, "signal is None");
+                        warn!(target: &self.base.log_key, "opc ua got None value from signal");
                     }
                 }
+                self.watch
+                    .changed()
+                    .await
+                    .expect("Failed to wait for change");
             }
         });
     }
 }
 
 pub struct SlotInterface<T> {
-    _marker: PhantomData<T>,
+    base: Base<T>,
+    channel: (watch::Sender<Option<T>>, watch::Receiver<Option<T>>),
+    node_id: NodeId,
+    parent_node_id: Option<NodeId>,
+    name: String,
+    manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+    subscriptions: Arc<SubscriptionCache>,
+    ns: u16,
 }
 
-impl<T: Clone + Copy + Sync + Send + 'static + std::fmt::Debug> SlotInterface<T>
+impl<T: Clone + Copy + Sync + Send + 'static + std::fmt::Debug + TypeName + ToDataTypeId>
+    SlotInterface<T>
 where
     opcua::types::Variant: OpcuaSupportedTypes<T>,
     opcua::types::Variant: From<T>,
 {
-    pub fn register_node(
+    pub fn new(
         base: Base<T>,
         channel: (watch::Sender<Option<T>>, watch::Receiver<Option<T>>),
-        node: NodeId,
-        parent_node: NodeId,
         manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
         subscriptions: Arc<SubscriptionCache>,
-    ) {
-        let address_space = manager.address_space();
+        ns: u16,
+    ) -> Self {
+        let name = base.name.clone();
+        let node_id_name = format!("Slot/{}", Base::<T>::type_and_name(&base.name));
+        Self {
+            base,
+            channel,
+            node_id: NodeId::new(ns, node_id_name),
+            parent_node_id: None,
+            name,
+            manager,
+            subscriptions,
+            ns,
+        }
+    }
+    pub fn node_id(mut self, node_id: NodeId) -> Self {
+        self.node_id = node_id;
+        self
+    }
+    pub fn parent_node(mut self, parent_node: NodeId) -> Self {
+        self.parent_node_id = Some(parent_node);
+        self
+    }
+    pub fn name(mut self, name: String) -> Self {
+        self.name = name;
+        self
+    }
+    pub fn register(mut self) {
+        if self.parent_node_id.is_none() {
+            let tfc_folder_id = NodeId::new(self.ns, "TFC");
+            let slot_folder_id = NodeId::new(self.ns, "Slot");
+            let type_folder_id = NodeId::new(self.ns, format!("Slot/{}", T::type_name()));
+            {
+                let mut address_space = self.manager.address_space().write();
+                address_space.add_folder(
+                    &tfc_folder_id,
+                    "TFC",
+                    "TFC",
+                    &NodeId::objects_folder_id(),
+                );
+                address_space.add_folder(&slot_folder_id, "Slot", "Slot", &tfc_folder_id);
+                address_space.add_folder(
+                    &type_folder_id,
+                    T::type_name(),
+                    T::type_name(),
+                    &slot_folder_id,
+                );
+            }
+            self.parent_node_id = Some(type_folder_id);
+        }
+
+        let address_space = self.manager.address_space();
         {
             let mut address_space = address_space.write();
-            VariableBuilder::new(&node, &base.name, &base.name)
-                .data_type(opcua::types::DataTypeId::Int64)
+            VariableBuilder::new(&self.node_id, &self.name, &self.name)
+                .data_type(T::to_data_type_id())
                 .writable()
-                .organized_by(&parent_node)
+                .organized_by(self.parent_node_id.as_ref().unwrap())
                 .insert(&mut address_space);
         }
-        manager
+        self.manager
             .inner()
-            .add_write_callback(node.clone(), move |value, _| {
-                error!("slot write callback");
+            .add_write_callback(self.node_id.clone(), move |value, _| {
                 if value.value.is_none() {
                     return opcua::types::StatusCode::BadNoValue;
                 }
@@ -96,34 +215,68 @@ where
                 let val: Result<T, Box<dyn std::error::Error + 'static>> =
                     value.value.unwrap().from_variant();
                 if let Ok(v) = val {
-                    channel.0.send(Some(v)).expect("Failed to send value");
+                    self.channel.0.send(Some(v)).expect("Failed to send value");
                 } else {
                     warn!("Unable to convert value: {:?}", val.err());
                 }
 
                 opcua::types::StatusCode::Good
             });
-        let mut watch = channel.1;
+        let mut watch = self.channel.1;
         tokio::spawn(async move {
             loop {
-                watch.changed().await.expect("Failed to wait for change");
                 let val = *watch.borrow_and_update();
                 match val {
                     Some(val) => {
-                        trace!(target: &base.log_key, "opcua slot is {:?}", val);
-
-                        manager
-                            .set_value(&subscriptions, &node, None, DataValue::new_now(val))
+                        self.manager
+                            .set_value(
+                                &self.subscriptions,
+                                &self.node_id,
+                                None,
+                                DataValue::new_now(val),
+                            )
                             .expect("Failed to set value");
                     }
                     None => {
-                        trace!(target: &base.log_key, "slot is None");
+                        warn!(target: &self.base.log_key, "opc ua got None value from slot");
                     }
                 }
+                watch.changed().await.expect("Failed to wait for change");
             }
         });
     }
 }
+
+pub trait ToDataTypeId {
+    fn to_data_type_id() -> DataTypeId;
+}
+
+macro_rules! impl_to_data_type_id {
+    ($(($type:ty, $variant:expr)),+ $(,)?) => {
+        $(
+            impl ToDataTypeId for $type {
+                fn to_data_type_id() -> DataTypeId {
+                    $variant
+                }
+            }
+        )+
+    };
+}
+
+impl_to_data_type_id!(
+    (bool, DataTypeId::Boolean),
+    (i8, DataTypeId::SByte),
+    (u8, DataTypeId::Byte),
+    (i16, DataTypeId::Int16),
+    (u16, DataTypeId::UInt16),
+    (i32, DataTypeId::Int32),
+    (u32, DataTypeId::UInt32),
+    (i64, DataTypeId::Int64),
+    (u64, DataTypeId::UInt64),
+    (f32, DataTypeId::Float),
+    (f64, DataTypeId::Double),
+    (String, DataTypeId::String),
+);
 
 pub trait OpcuaSupportedTypes<T> {
     fn from_variant(&self) -> Result<T, Box<dyn std::error::Error>>

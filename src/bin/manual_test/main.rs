@@ -18,7 +18,7 @@ use opcua::server::node_manager::memory::{
 };
 use opcua::server::{ServerBuilder, SubscriptionCache};
 use opcua::types::{DataValue, NodeId, UAString};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,42 +26,6 @@ use std::time::{Duration, Instant};
 struct Greeter {
     count: u64,
 }
-
-// #[interface(name = "org.zbus.MyGreeter1")]
-// impl Greeter {
-//     // Can be `async` as well.
-//     fn say_hello(&mut self, name: &str) -> String {
-//         self.count += 1;
-//         format!("Hello {}! I have been called {} times.", name, self.count)
-//     }
-// }
-//
-// struct Application {
-//     my_dream: i64,
-//     slot: Slot<i64>,
-// }
-
-// impl Application {
-//     fn new(signal_name: &str) -> Arc<Mutex<Self>> {
-//         let app = Arc::new(Mutex::new(Application {
-//             my_dream: 0,
-//             slot: Slot::new(Base::new("bark", None)),
-//         }));
-
-//         let shared_app = Arc::clone(&app);
-//         app.lock().unwrap().slot.recv(Box::new(move |val: &i64| {
-//             shared_app.lock().unwrap().callback(val);
-//         }));
-
-//         let _ = app.lock().unwrap().slot.connect(signal_name);
-
-//         app
-//     }
-//     fn callback(&mut self, val: &i64) {
-//         self.my_dream = *val;
-//         println!("All my dreams come true: {}", val);
-//     }
-// }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -101,60 +65,176 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _config = ConfMan::<Greeter>::new(_conn.clone(), "greeterfu_uf0");
 
     let mut i64_signal = Signal::<i64>::new(_conn.clone(), Base::new("foo", None));
+    let mut string_signal = Signal::<String>::new(_conn.clone(), Base::new("hello", None));
+
+    string_signal
+        .async_send("hello world".to_string())
+        .await
+        .expect("Failed to send");
 
     // let _ = Application::new(&i64_signal.full_name());
 
     let bool_slot = Slot::<bool>::new(_conn.clone(), Base::new("bar", None));
     let mut i64_slot = Slot::<i64>::new(_conn.clone(), Base::new("bar", None));
+    let mut i64_slot2 = Slot::<i64>::new(_conn.clone(), Base::new("bar2", None));
     let mut i64_slot_stream = Slot::<i64>::new(_conn.clone(), Base::new("stream", None));
+    let mut my_slots = vec![];
+    let mut my_signals = vec![];
+    let slot_count = 20000;
+    for x in 0..(slot_count / 100) {
+        my_signals.push(Signal::<i64>::new(
+            _conn.clone(),
+            Base::new(format!("spawned_pimp{}", x).as_ref(), None),
+        ));
+    }
+    for x in 0..slot_count {
+        my_slots.push(Slot::<i64>::new(
+            _conn.clone(),
+            Base::new(format!("spawned_bitch{}", x).as_ref(), None),
+        ));
+    }
+    let mut i64_slot_stream2 = Slot::<i64>::new(_conn.clone(), Base::new("stream2", None));
     i64_slot.recv(Box::new(|&val| {
         println!("Received value: {:?}", val);
     }));
+    i64_slot2.recv(Box::new(|&val| {
+        println!("2 Received value: {:?}", val);
+    }));
     println!("Slot created");
-    dbus::SignalInterface::register(i64_signal.base(), _conn.clone(), i64_signal.subscribe());
-    dbus::SlotInterface::register(i64_slot.base(), _conn.clone(), i64_slot.channel("dbus"));
-    dbus::SlotInterface::register(
-        i64_slot_stream.base(),
-        _conn.clone(),
-        i64_slot_stream.channel("dbus"),
-    );
+    // dbus::SignalInterface::register(i64_signal.base(), _conn.clone(), i64_signal.subscribe());
+    // dbus::SlotInterface::register(i64_slot.base(), _conn.clone(), i64_slot.channel("dbus"));
+    // dbus::SlotInterface::register(
+    //     i64_slot_stream.base(),
+    //     _conn.clone(),
+    //     i64_slot_stream.channel("dbus"),
+    // );
+    // dbus::SlotInterface::register(
+    //     i64_slot_stream2.base(),
+    //     _conn.clone(),
+    //     i64_slot_stream2.channel("dbus"),
+    // );
+    // dbus::SlotInterface::register(i64_slot2.base(), _conn.clone(), i64_slot2.channel("dbus"));
 
     let signal_node = NodeId::new(ns, i64_signal.base().name);
     let slot_node = NodeId::new(ns, i64_slot.base().name);
     let address_space = node_manager.address_space();
-    let tfc_folder_id = NodeId::new(ns, "folder");
+    let tfc_folder_id = NodeId::new(ns, "TFC");
     {
         let mut address_space = address_space.write();
 
         address_space.add_folder(&tfc_folder_id, "TFC", "TFC", &NodeId::objects_folder_id());
     }
+    let tfc_folder_id2 = NodeId::new(ns, "TFC2");
+    {
+        let mut address_space = address_space.write();
 
-    tfc::ipc::opcua::SignalInterface::register_node(
-        i64_signal.base(),
-        i64_signal.subscribe(),
-        signal_node,
-        tfc_folder_id.clone(),
-        node_manager.clone(),
-        handle.subscriptions().clone(),
-    );
-    tfc::ipc::opcua::SlotInterface::register_node(
-        i64_slot.base(),
-        i64_slot.channel("opcua"),
-        slot_node,
-        tfc_folder_id,
-        node_manager.clone(),
-        handle.subscriptions().clone(),
-    );
+        address_space.add_folder(&tfc_folder_id2, "TFC2", "TFC2", &tfc_folder_id);
+    }
+    let tfc_folder_id3 = NodeId::new(ns, "TFC3");
+    {
+        let mut address_space = address_space.write();
+
+        address_space.add_folder(&tfc_folder_id3, "TFC3", "TFC3", &tfc_folder_id2);
+    }
 
     let full_name = i64_signal.base().full_name();
-    let _ = i64_slot.async_connect(&full_name).await;
-    let _ = i64_slot_stream.async_connect(&full_name).await;
+
+    tfc::ipc::opcua::SignalInterface::new(
+        i64_signal.base(),
+        i64_signal.subscribe(),
+        node_manager.clone(),
+        handle.subscriptions().clone(),
+        ns.clone(),
+    )
+    .node_id(signal_node)
+    .register();
+    tfc::ipc::opcua::SignalInterface::new(
+        string_signal.base(),
+        string_signal.subscribe(),
+        node_manager.clone(),
+        handle.subscriptions().clone(),
+        ns.clone(),
+    )
+    .register();
+    let counter = Arc::new(AtomicUsize::new(0));
+    for index in 0..slot_count {
+        let slot = &mut my_slots[index];
+        let full_name = my_signals[index / 100].base().full_name();
+        let _ = slot.async_connect(&full_name).await;
+        let slot_name = slot.base().name.clone();
+        let counter = counter.clone();
+        slot.recv(Box::new(move |&val| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            //println!("{} Received value: {:?}", slot_name, val);
+        }));
+        // tfc::ipc::opcua::SlotInterface::new(
+        //     slot.base(),
+        //     slot.channel("opcua"),
+        //     node_manager.clone(),
+        //     handle.subscriptions().clone(),
+        //     ns.clone(),
+        // )
+        // .register();
+    }
+    // my_slots.len();
+    tfc::ipc::opcua::SlotInterface::new(
+        i64_slot.base(),
+        i64_slot.channel("opcua"),
+        node_manager.clone(),
+        handle.subscriptions().clone(),
+        ns.clone(),
+    )
+    .node_id(slot_node)
+    .parent_node(tfc_folder_id3)
+    .register();
+    tfc::ipc::opcua::SlotInterface::new(
+        i64_slot2.base(),
+        i64_slot2.channel("opcua"),
+        node_manager.clone(),
+        handle.subscriptions().clone(),
+        ns.clone(),
+    )
+    .register();
+    tfc::ipc::opcua::SlotInterface::new(
+        i64_slot_stream.base(),
+        i64_slot_stream.channel("opcua"),
+        node_manager.clone(),
+        handle.subscriptions().clone(),
+        ns.clone(),
+    )
+    .register();
+    tfc::ipc::opcua::SlotInterface::new(
+        i64_slot_stream2.base(),
+        i64_slot_stream2.channel("opcua"),
+        node_manager.clone(),
+        handle.subscriptions().clone(),
+        ns.clone(),
+    )
+    .register();
+
+    // let _ = i64_slot2.async_connect(&full_name).await;
+    // let _ = i64_slot.async_connect(&full_name).await;
+    // let _ = i64_slot_stream.async_connect(&full_name).await;
+    // let _ = i64_slot_stream2.async_connect(&full_name).await;
     println!("Slot connected");
 
     let mut stream = i64_slot_stream.subscribe();
     tokio::spawn(async move {
         loop {
             println!("awaiting new stream val");
+            let val = stream.changed().await;
+            println!(
+                "Watch val: {:?}, val: {:?}",
+                val,
+                *stream.borrow_and_update()
+            );
+        }
+    });
+
+    let mut stream = i64_slot_stream2.subscribe();
+    tokio::spawn(async move {
+        loop {
+            println!("2 awaiting new stream val");
             let val = stream.changed().await;
             println!(
                 "Watch val: {:?}, val: {:?}",
@@ -172,11 +252,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // tokio::spawn(async move {
+    //     for i in 1..1024 {
+    //         println!("Sending value: {}", i);
+    //         i64_signal.async_send(i).await.expect("Failed to send");
+    //         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    //         println!(
+    //             "Last sent reported by bitches: {}",
+    //             counter.load(Ordering::Relaxed)
+    //         );
+    //         counter.store(0, Ordering::Relaxed);
+    //     }
+    // });
+
     tokio::spawn(async move {
         for i in 1..1024 {
-            i64_signal.async_send(i).await.expect("Failed to send");
             println!("Sending value: {}", i);
+            for sig in &mut my_signals {
+                sig.async_send(i).await.expect("Failed to send");
+            }
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            println!(
+                "Last sent reported by bitches: {}",
+                counter.load(Ordering::Relaxed)
+            );
+            counter.store(0, Ordering::Relaxed);
         }
     });
 
