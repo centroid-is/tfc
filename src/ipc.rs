@@ -19,10 +19,14 @@ use crate::progbase;
 pub mod dbus;
 pub mod opcua;
 
-const FILE_PREFIX: &'static str = "ipc://";
-const FILE_PATH: &'static str = "/var/run/tfc/";
+const ZMQ_PREFIX: &'static str = "ipc://";
+fn path() -> PathBuf {
+    const FILE_PATH: &'static str = "/var/run/tfc/";
+    PathBuf::from(std::env::var("RUNTIME_DIRECTORY").unwrap_or_else(|_| FILE_PATH.to_string()))
+}
 fn endpoint(file_name: &str) -> String {
-    format!("{}{}{}", FILE_PREFIX, FILE_PATH, file_name)
+    let path = path().join(file_name);
+    format!("{}{}", ZMQ_PREFIX, path.display())
 }
 
 #[derive(Clone)]
@@ -58,9 +62,7 @@ impl<T: TypeName> Base<T> {
         endpoint(&self.full_name())
     }
     pub fn path(&self) -> PathBuf {
-        let runtime_dir =
-            std::env::var("RUNTIME_DIRECTORY").unwrap_or_else(|_| FILE_PATH.to_string());
-        PathBuf::from(format!("{}{}", runtime_dir, self.full_name()))
+        path().join(self.full_name())
     }
 }
 
