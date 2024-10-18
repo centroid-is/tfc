@@ -20,6 +20,10 @@ jobs:
     - name: Install dependencies
       run: sudo apt-get install -y mold lld
     - uses: actions/checkout@v4
+    - name: Copy dbus-tfc.conf
+      run: |
+        sudo cp dbus-tfc.conf /etc/dbus-1/system.d/
+        sudo systemctl reload dbus
     - name: Build
       run: cargo build --verbose
     - name: Run tests
