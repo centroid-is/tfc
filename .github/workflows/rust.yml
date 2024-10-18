@@ -8,8 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUNTIME_DIRECTORY: /tmp/
-  CONFIGURATION_DIRECTORY: /tmp/
 
 jobs:
   build:
@@ -29,4 +27,7 @@ jobs:
     - name: Build
       run: cargo build --verbose
     - name: Run tests
+      env:
+        RUNTIME_DIRECTORY: /tmp/
+        CONFIGURATION_DIRECTORY: /tmp/
       run: cargo test --verbose
