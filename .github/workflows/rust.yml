@@ -18,12 +18,12 @@ jobs:
 
     steps:
     - name: Install dependencies
-      run: sudo apt-get install -y mold lld
+      run: sudo apt-get install -y mold lld clang
     - uses: actions/checkout@v4
     - name: Copy dbus-tfc.conf
       run: |
         sudo cp dbus-tfc.conf /etc/dbus-1/system.d/
-        sudo systemctl reload dbus
+        sudo /usr/bin/busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig
     - name: Build
       run: cargo build --verbose
     - name: Run tests
