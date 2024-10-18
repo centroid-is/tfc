@@ -7,10 +7,8 @@ use opcua::{
         node_manager::memory::{InMemoryNodeManager, SimpleNodeManagerImpl},
         SubscriptionCache,
     },
-    types::{DataTypeId, DataValue, NodeId, Variant},
+    types::{DataTypeId, DataValue, NodeId},
 };
-use std::marker::PhantomData;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::watch;
 pub struct SignalInterface<T> {
