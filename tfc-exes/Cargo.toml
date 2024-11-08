@@ -1,10 +1,23 @@
 [package]
 name = "tfc-exes"
-version = "0.1.0"
+version = "2024.10.0"
+authors = ["Centroid <centroid@centroid.is>"]
 edition = "2021"
+description = "TFC services and interfaces to those services"
+readme = "README.md"
+repository = "https://github.com/centroid-is/tfc-exes"
+homepage = "https://centroid.is"
+keywords = ["tfc", "centroid", "framework", "dbus"]
+categories = ["Development", "System", "Framework"]
+license = "MIT"
 
 [dependencies]
+arrayvec = "0.7.6"
+async-trait = "0.1.83"
+atomic_refcell = "0.1.13"
+bitvec = "1.0.1"
 derive_more = { version = "1.0.0", features = ["display"] }
+ethercrab = "0.5.0"
 futures = "0.3.30"
 futures-channel = "0.3.30"
 log = "0.4.22"
@@ -13,6 +26,6 @@ schemars = "0.8.21"
 serde = "1.0.210"
 smlang = { version = "0.8.0", features = ["graphviz"] }
 # tfc = { git = "https://github.com/centroid-is/tfc.git", tag = "2024.9.1" }
-tfc = { path = "../framework-rs"}
+tfc = { path = "../framework-rs", features = ["s3x-legacy-naming"] }
 tokio = "1.40.0"
 zbus = "4.4.0"
