@@ -41,7 +41,7 @@ futures = "0.3.30"
 async-trait = "0.1.82"
 parking_lot = { version = "0.12.3", features = ["send_guard", "serde"] }
 tokio-util = "0.7.12"
-opcua = { git = "https://github.com/einarmo/opcua.git", branch = "async-server", commit = "a6c7eb8f70ebd8a6a315ea051a795d3d8fd8018e" }
+opcua = { git = "https://github.com/einarmo/opcua.git", branch = "rewrite-master", commit = "7742e0d379a5f027fe3cb385bc030b0a622e3c47" }
 
 [dev-dependencies]
 rand = "0.8.5"

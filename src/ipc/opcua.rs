@@ -85,12 +85,13 @@ where
 
         let address_space = self.manager.address_space();
         {
-            let mut address_space = address_space.write();
+            let mut address_space_guard = address_space.write();
+            let address_space = &mut *address_space_guard;
             VariableBuilder::new(&self.node_id, &self.name, &self.name)
                 .data_type(T::to_data_type_id())
                 .writable()
                 .organized_by(self.parent_node_id.as_ref().unwrap())
-                .insert(&mut address_space);
+                .insert(address_space);
         }
         tokio::spawn(async move {
             loop {
@@ -196,12 +197,13 @@ where
 
         let address_space = self.manager.address_space();
         {
-            let mut address_space = address_space.write();
+            let mut address_space_guard = address_space.write();
+            let address_space = &mut *address_space_guard;
             VariableBuilder::new(&self.node_id, &self.name, &self.name)
                 .data_type(T::to_data_type_id())
                 .writable()
                 .organized_by(self.parent_node_id.as_ref().unwrap())
-                .insert(&mut address_space);
+                .insert(address_space);
         }
         self.manager
             .inner()
