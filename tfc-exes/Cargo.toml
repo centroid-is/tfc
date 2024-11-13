@@ -16,6 +16,7 @@ arrayvec = "0.7.6"
 async-trait = "0.1.83"
 atomic_refcell = "0.1.13"
 bitvec = "1.0.1"
+console-subscriber = "0.4.1"
 derive_more = { version = "1.0.0", features = ["display"] }
 ethercrab = "0.5.0"
 futures = "0.3.30"
@@ -27,5 +28,6 @@ serde = "1.0.210"
 smlang = { version = "0.8.0", features = ["graphviz"] }
 # tfc = { git = "https://github.com/centroid-is/tfc.git", tag = "2024.9.1" }
 tfc = { path = "../framework-rs", features = ["s3x-legacy-naming"] }
-tokio = "1.40.0"
+tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "tracing"] }
+tracing = "0.1.40"
 zbus = "4.4.0"

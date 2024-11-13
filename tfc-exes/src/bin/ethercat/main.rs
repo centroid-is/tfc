@@ -39,7 +39,7 @@ struct BusConfig {
 struct Bus {
     main_device: Arc<MainDevice<'static>>,
     config: ConfMan<BusConfig>,
-    devices: ArrayVec<Box<dyn Device>, MAX_SUBDEVICES>,
+    // devices: ArrayVec<Box<dyn Device>, MAX_SUBDEVICES>,
     group: Option<SubDeviceGroup<MAX_SUBDEVICES, PDI_LEN, ethercrab::subdevice_group::Op>>,
     log_key: String,
 }
@@ -66,13 +66,13 @@ impl Bus {
         Self {
             main_device,
             config,
-            devices: ArrayVec::new(),
+            // devices: ArrayVec::new(),
             group: None,
             log_key: "ethercat".to_string(),
         }
     }
     pub async fn init(&mut self, dbus: zbus::Connection) -> Result<(), Box<dyn Error>> {
-        self.devices.clear();
+        // self.devices.clear();
         let mut group = self
             .main_device
             .init_single_group::<MAX_SUBDEVICES, PDI_LEN>(ethercat_now)
@@ -80,19 +80,19 @@ impl Bus {
         let mut index: u16 = 0;
         for mut subdevice in group.iter(&self.main_device) {
             let identity = subdevice.identity();
-            let mut device = make_device(
-                dbus.clone(),
-                identity.vendor_id,
-                identity.product_id,
-                index,
-                subdevice.alias_address(),
-            );
-            // TODO: Make futures that can be awaited in parallel
-            device.setup(&mut subdevice).await.map_err(|e| {
-                warn!(target: &self.log_key, "Failed to setup device {}: {}", index, e);
-                e
-            })?;
-            self.devices.push(device);
+            // let mut device = make_device(
+            //     dbus.clone(),
+            //     identity.vendor_id,
+            //     identity.product_id,
+            //     index,
+            //     subdevice.alias_address(),
+            // );
+            // // TODO: Make futures that can be awaited in parallel
+            // device.setup(&mut subdevice).await.map_err(|e| {
+            //     warn!(target: &self.log_key, "Failed to setup device {}: {}", index, e);
+            //     e
+            // })?;
+            // self.devices.push(device);
             index += 1;
         }
         trace!(target: &self.log_key, "Setup complete for devices: {}", index);
@@ -107,7 +107,7 @@ impl Bus {
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         let ref mut group = self.group.as_mut().expect("Group not initialized");
 
-        let mut tick_interval = tokio::time::interval(self.config.read().cycle_time.into());
+        let mut tick_interval = tokio::time::interval(Duration::from_millis(1));
         info!(target: &self.log_key, "Ethercat tick interval: {:?}", self.config.read().cycle_time);
         tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut cnt = 0;
@@ -115,18 +115,21 @@ impl Bus {
         let mut tx_rx_duration = Duration::ZERO;
         let mut process_data_duration = Duration::ZERO;
         loop {
-            let mut tx_rx_instant = Instant::now();
+            let tx_rx_instant = Instant::now();
             group.tx_rx(&self.main_device).await?;
             tx_rx_duration += tx_rx_instant.elapsed();
 
-            let mut process_data_instant = Instant::now();
+            let process_data_instant = Instant::now();
             for (device_index, mut subdevice) in group.iter(&self.main_device).enumerate() {
-                if let Some(device) = self.devices.get_mut(device_index) {
-                    device.process_data(&mut subdevice).await?;
-                }
+                // if let Some(device) = self.devices.get_mut(device_index) {
+                //     // device.process_data(&mut subdevice).await?;
+                // }
             }
             process_data_duration += process_data_instant.elapsed();
-
+            //
+            // tokio::time::sleep(Duration::from_millis(1)).await;
+            // std::thread::sleep(Duration::from_millis(1));
+            // tokio::task::yield_now().await;
             tick_interval.tick().await;
             cnt += 1;
             if cnt % 1000 == 0 {
@@ -138,6 +141,7 @@ impl Bus {
                 process_data_duration = Duration::ZERO;
             }
         }
+        std::future::pending::<()>().await;
 
         Ok(())
     }
@@ -145,7 +149,11 @@ impl Bus {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // console_subscriber::init();
     progbase::init();
+    println!("Starting ethercat");
+    println!("{}", progbase::exe_name());
+    println!("{}", progbase::proc_name());
     logger::init_combined_logger()?;
     trace!(target: "ethercat", "Starting ethercat");
     let formatted_name = format!(
