@@ -141,6 +141,7 @@ impl Bus {
                 process_data_duration = Duration::ZERO;
             }
         }
+        // If I comment the loop out the load falls down to 0 ish %
         std::future::pending::<()>().await;
 
         Ok(())
