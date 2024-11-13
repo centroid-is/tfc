@@ -379,6 +379,13 @@ where
         let log_key = base.log_key.clone();
         let init_task = tokio::spawn(async move {
             let mut sock = PubSocket::new();
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent).expect(
+                        format!("Failed to create directory: {}", parent.display()).as_str(),
+                    );
+                }
+            }
             if path.exists() {
                 std::fs::remove_file(path)
                     .expect(format!("Failed to remove file: {}", endpoint).as_str());
