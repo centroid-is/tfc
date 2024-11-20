@@ -203,6 +203,16 @@ impl_any_filter_decl!(
     }
 );
 
+impl_any_filter_decl!(
+    f64,
+    AnyFilterF64,
+    vec![AnyFilterF64::NewState(FilterNewState {})],
+    {
+        NewState(FilterNewState),
+        Offset(FilterOffset<f64>)
+    }
+);
+
 pub struct Filters<T>
 where
     T: AnyFilterDecl + Send + Sync + 'static + PartialEq,
