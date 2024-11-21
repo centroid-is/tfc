@@ -1,5 +1,6 @@
 use log::{self, Log, Metadata, Record, SetLoggerError};
 use std::sync::Once;
+#[cfg(target_os = "linux")]
 use systemd_journal_logger::JournalLog;
 
 use crate::progbase;
@@ -8,18 +9,28 @@ static INIT: Once = Once::new();
 
 struct CombinedLogger {
     env_logger: env_logger::Logger,
+    #[cfg(target_os = "linux")]
     journal_logger: JournalLog,
 }
 
 impl Log for CombinedLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        self.env_logger.enabled(metadata) || self.journal_logger.enabled(metadata)
+        let mut enabled = self.env_logger.enabled(metadata);
+        #[cfg(target_os = "linux")]
+        {
+            enabled || self.journal_logger.enabled(metadata)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            enabled
+        }
     }
 
     fn log(&self, record: &Record) {
         if self.env_logger.enabled(record.metadata()) {
             self.env_logger.log(record);
         }
+        #[cfg(target_os = "linux")]
         if self.journal_logger.enabled(record.metadata()) {
             // Example output from journalctl
             /*
@@ -40,6 +51,7 @@ impl Log for CombinedLogger {
 
     fn flush(&self) {
         self.env_logger.flush();
+        #[cfg(target_os = "linux")]
         self.journal_logger.flush();
     }
 }
@@ -64,6 +76,7 @@ pub fn init_combined_logger() -> Result<(), SetLoggerError> {
                 })
                 .build();
 
+        #[cfg(target_os = "linux")]
         let journal_logger = JournalLog::new()
             .unwrap()
             .with_extra_fields(vec![
@@ -79,6 +92,7 @@ pub fn init_combined_logger() -> Result<(), SetLoggerError> {
 
         let combined_logger = CombinedLogger {
             env_logger,
+            #[cfg(target_os = "linux")]
             journal_logger,
         };
 

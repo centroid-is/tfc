@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use chrono::Utc;
+
 fn main() {
     // Define the output path for the version.rs file
     let out_dir = env::var("OUT_DIR").unwrap();
@@ -25,7 +27,7 @@ fn main() {
     let git_tag = run_command(&["git", "describe", "--tags", "--abbrev=1"]);
     let git_commit_date = run_command(&["git", "log", "-1", "--pretty=format:%as"]);
     let git_is_dirty = run_command(&["git", "diff", "--shortstat"]);
-    let build_date = run_command(&["date", "+\"%Y-%m-%d %H:%M:%S\""]);
+    let build_date = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     // Determine if the repository is dirty
     let git_is_dirty = if git_is_dirty.is_empty() {
@@ -54,7 +56,7 @@ pub const GIT_COMMIT_DATE: &str = "{}";
 #[allow(dead_code)]
 pub const GIT_IS_DIRTY: &str = "{}";
 #[allow(dead_code)]
-pub const BUILD_DATE: &str = {};
+pub const BUILD_DATE: &str = "{}";
 "#,
             git_repo,
             git_hash,
