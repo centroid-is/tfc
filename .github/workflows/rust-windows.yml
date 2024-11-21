@@ -1,0 +1,50 @@
+name: Rust
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        # Install Chocolatey if not already installed
+        Set-ExecutionPolicy Bypass -Scope Process -Force;
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072;
+        iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+
+        # Install LLVM (includes Clang and LLD)
+        choco install llvm -y
+
+        # Install Mold (if available) or use an alternative linker
+        # Note: As of my knowledge cutoff in September 2021, Mold may not be available for Windows.
+        # You might need to use lld or the default linker provided by LLVM.
+        # If Mold is available via another method, you can add the installation steps here.
+
+    - name: Set LLVM in PATH
+      shell: pwsh
+      run: |
+        $llvmPath = "C:\Program Files\LLVM\bin"
+        echo "::add-path::$llvmPath"
+        $env:Path += ";$llvmPath"
+
+    - name: Build
+      run: cargo build --verbose
+
+    - name: Run tests
+      env:
+        RUNTIME_DIRECTORY: C:\Temp
+        CONFIGURATION_DIRECTORY: C:\Temp
+      run: cargo test --verbose
