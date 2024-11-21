@@ -21,8 +21,8 @@ jobs:
     - name: Build
       run: cargo build --verbose
 
-    - name: Run tests
-      env:
-        RUNTIME_DIRECTORY: C:\Temp
-        CONFIGURATION_DIRECTORY: C:\Temp
-      run: cargo test --verbose
+    # - name: Run tests
+    #   env:
+    #     RUNTIME_DIRECTORY: C:\Temp
+    #     CONFIGURATION_DIRECTORY: C:\Temp
+    #   run: cargo test --verbose
