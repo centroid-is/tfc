@@ -298,7 +298,7 @@ where
             _marker: PhantomData,
         }
     }
-    fn value_mut(&mut self) -> RwLockWriteGuard<'_, T> {
+    pub fn value_mut(&mut self) -> RwLockWriteGuard<'_, T> {
         self.owner.value_mut()
     }
 }
