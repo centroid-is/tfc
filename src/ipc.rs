@@ -241,7 +241,7 @@ where
                         break;
                     }
                     Err(e) => {
-                        debug!(target: &log_key, "Failed to connect to: {}", e);
+                        debug!(target: &log_key, "Failed to connect to: {}, err: {}", socket_path, e);
                         sleep(Duration::from_millis(100)).await;
                     }
                 },
@@ -307,6 +307,7 @@ where
 
     pub fn recv(&mut self, callback: Box<dyn Fn(&T) + Send + Sync>) {
         let mut watcher = self.subscribe();
+        let log_key = self.base.log_key.clone();
         tokio::spawn(async move {
             loop {
                 match watcher.changed().await {
@@ -315,7 +316,8 @@ where
                         callback(value.as_ref().unwrap());
                     }
                     Err(e) => {
-                        panic!("recv Error watching for changes: {}", e);
+                        warn!(target: &log_key, "recv Error watching for changes: {}. Closing recv loop.", e);
+                        break;
                     }
                 }
             }
