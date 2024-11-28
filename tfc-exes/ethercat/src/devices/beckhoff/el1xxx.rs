@@ -91,6 +91,12 @@ impl<D: DeviceInfo + Entries<N> + Send + Sync, const N: usize, const ARR_LEN: us
 
         Ok(())
     }
+    fn vendor_id(&self) -> u32 {
+        D::VENDOR_ID
+    }
+    fn product_id(&self) -> u32 {
+        D::PRODUCT_ID
+    }
 }
 
 pub struct El1002Info;

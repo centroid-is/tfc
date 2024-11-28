@@ -20,6 +20,12 @@ impl Device for Ek1100 {
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
+    fn vendor_id(&self) -> u32 {
+        Self::VENDOR_ID
+    }
+    fn product_id(&self) -> u32 {
+        Self::PRODUCT_ID
+    }
 }
 
 impl DeviceInfo for Ek1100 {

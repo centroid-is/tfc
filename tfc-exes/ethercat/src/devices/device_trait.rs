@@ -13,6 +13,8 @@ pub trait Device {
         &mut self,
         device: &mut SubDeviceRef<'maindevice, SubDevicePdi<'group>>,
     ) -> Result<(), Box<dyn Error + Send + Sync>>;
+    fn vendor_id(&self) -> u32;
+    fn product_id(&self) -> u32;
 }
 
 pub trait DeviceInfo {
@@ -36,6 +38,12 @@ impl Device for UnimplementedDevice {
         device: &mut SubDeviceRef<'maindevice, SubDevicePdi<'group>>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
+    }
+    fn vendor_id(&self) -> u32 {
+        0
+    }
+    fn product_id(&self) -> u32 {
+        0
     }
 }
 

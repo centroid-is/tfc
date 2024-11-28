@@ -680,7 +680,7 @@ impl Device for El3356 {
                 }
                 scale.last_mass = signal_mass_rounded;
                 scale.mass_signal.async_send(signal_mass_rounded).await?;
-                info!(target: &self.log_key, "Mass signal sent: {} at raw signal {}", signal_mass_rounded, raw_signal);
+                // info!(target: &self.log_key, "Mass signal sent: {} at raw signal {}", signal_mass_rounded, raw_signal);
                 Ok(()) as Result<(), Box<dyn Error + Send + Sync>>
             }
             ModeImpl::Reference(ref mut reference) => {
@@ -705,6 +705,12 @@ impl Device for El3356 {
         }?;
 
         Ok(())
+    }
+    fn vendor_id(&self) -> u32 {
+        Self::VENDOR_ID
+    }
+    fn product_id(&self) -> u32 {
+        Self::PRODUCT_ID
     }
 }
 

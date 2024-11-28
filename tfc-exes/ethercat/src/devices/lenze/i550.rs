@@ -1068,6 +1068,12 @@ impl Device for I550 {
 
         Ok(())
     }
+    fn vendor_id(&self) -> u32 {
+        Self::VENDOR_ID
+    }
+    fn product_id(&self) -> u32 {
+        Self::PRODUCT_ID
+    }
 }
 
 impl DeviceInfo for I550 {

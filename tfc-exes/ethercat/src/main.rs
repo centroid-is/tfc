@@ -31,10 +31,23 @@ const PDI_LEN: usize = 76;
 
 static PDU_STORAGE: PduStorage<MAX_FRAMES, MAX_PDU_DATA> = PduStorage::new();
 
-#[derive(Deserialize, Serialize, JsonSchema, Default)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 struct BusConfig {
     pub interface: String,
     pub cycle_time: MicroDuration,
+    #[schemars(
+        description = "Minimum number of subdevices that must be in the init state before the bus is transitioned into operational"
+    )]
+    pub subdevice_min_count: u8,
+}
+impl Default for BusConfig {
+    fn default() -> Self {
+        Self {
+            interface: "eth0".to_string(),
+            cycle_time: Duration::from_millis(1).into(),
+            subdevice_min_count: 1,
+        }
+    }
 }
 
 struct Bus {
@@ -43,6 +56,7 @@ struct Bus {
     devices: [Box<dyn Device>; MAX_SUBDEVICES],
     group: Option<SubDeviceGroup<MAX_SUBDEVICES, PDI_LEN, ethercrab::subdevice_group::Op>>,
     log_key: String,
+    expected_working_counter: u16,
 }
 
 impl Bus {
@@ -55,10 +69,7 @@ impl Bus {
             MainDeviceConfig::default(),
         ));
 
-        let config = ConfMan::<BusConfig>::new(conn.clone(), "bus").with_default(BusConfig {
-            interface: "eth0".to_string(),
-            cycle_time: Duration::from_millis(1).into(),
-        });
+        let config = ConfMan::<BusConfig>::new(conn.clone(), "bus");
         tokio::spawn(tx_rx_task(&config.read().interface, tx, rx).expect("spawn TX/RX task"));
         Self {
             main_device,
@@ -66,6 +77,7 @@ impl Bus {
             devices: std::array::from_fn(|_| Box::new(UnimplementedDevice) as Box<dyn Device>),
             group: None,
             log_key: "ethercat".to_string(),
+            expected_working_counter: 0,
         }
     }
     pub async fn init(
@@ -78,22 +90,35 @@ impl Bus {
             .init_single_group::<MAX_SUBDEVICES, PDI_LEN>(ethercat_now)
             .await?; // BIG TODO HOW CAN I CONFIGURE THIS TIMEOUT, that is putting group into init state? state_transition does not work here
         debug!(target: &self.log_key, "Initialized main device");
+
+        if group.len() < self.config.read().subdevice_min_count as usize {
+            return Err(format!(
+                "Not enough subdevices in init state, expected: {}, got: {}",
+                self.config.read().subdevice_min_count,
+                group.len()
+            )
+            .into());
+        }
+
         let mut index: u16 = 0;
         for (idx, mut subdevice) in group.iter(&self.main_device).enumerate() {
             let identity = subdevice.identity();
-            let mut device = make_device(
-                dbus.clone(),
-                identity.vendor_id,
-                identity.product_id,
-                index,
-                subdevice.alias_address(),
-            );
+            if self.devices[idx].vendor_id() != identity.vendor_id
+                || self.devices[idx].product_id() != identity.product_id
+            {
+                self.devices[idx] = make_device(
+                    dbus.clone(),
+                    identity.vendor_id,
+                    identity.product_id,
+                    index,
+                    subdevice.alias_address(),
+                );
+            }
             // TODO: Make futures that can be awaited in parallel
-            device.setup(&mut subdevice).await.map_err(|e| {
+            self.devices[idx].setup(&mut subdevice).await.map_err(|e| {
                 warn!(target: &self.log_key, "Failed to setup device {}: {}", index, e);
                 e
             })?;
-            self.devices[idx] = device;
             index += 1;
         }
         trace!(target: &self.log_key, "Setup complete for devices: {}", index);
@@ -104,9 +129,8 @@ impl Bus {
 
         debug!(target: &self.log_key, "Group in safe op");
 
-        group.tx_rx(&self.main_device).await?;
-
-        debug!(target: &self.log_key, "Group in safe op Tx/Rx complete");
+        self.expected_working_counter = group.tx_rx(&self.main_device).await?;
+        info!(target: &self.log_key, "Group in safe op Tx/Rx complete, now will expect working counter to be: {}", self.expected_working_counter);
 
         let group = group.into_op(&self.main_device).await?;
 
@@ -130,8 +154,18 @@ impl Bus {
             std::array::from_fn(|_| None);
         loop {
             let tx_rx_instant = Instant::now();
-            group.tx_rx(&self.main_device).await?;
+            let wc = group.tx_rx(&self.main_device).await?;
             tx_rx_duration += tx_rx_instant.elapsed();
+
+            if wc != self.expected_working_counter {
+                // TODO we need to recover less tremeendously than this
+                // https://github.com/ethercrab-rs/ethercrab/discussions/253
+                return Err(format!(
+                    "Working counter mismatch, expected: {}, got: {}",
+                    self.expected_working_counter, wc
+                )
+                .into());
+            }
 
             let process_data_instant = Instant::now();
             for (device_index, mut subdevice) in group.iter(&self.main_device).enumerate() {
@@ -150,6 +184,7 @@ impl Bus {
                 }
             }
             process_data_duration += process_data_instant.elapsed();
+
             tick_interval.tick().await;
             cnt += 1;
             if cnt % 1000 == 0 {
