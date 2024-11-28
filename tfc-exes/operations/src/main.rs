@@ -7,7 +7,6 @@ use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smlang::statemachine;
-use std::error::Error;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -695,8 +694,8 @@ impl OperationsImpl {
         let _ = self.maintenance_out.send(false);
     }
 
-    fn is_fault(&self) -> Result<bool, Box<dyn Error + Send + Sync>> {
-        self.fault_in.value()
+    fn is_fault(&self) -> Option<bool> {
+        self.fault_in.subscribe().borrow().clone()
     }
 
     fn transition(&mut self, from: &OperationsStates, to: &OperationsStates) -> Result<(), ()> {
@@ -842,14 +841,7 @@ impl OperationsStateMachineContext for Context {
     }
     fn is_fault(&self) -> Result<bool, ()> {
         // returns false if there is an error
-        Ok(self
-            .with_owner(|ops_impl| {
-                ops_impl.is_fault().map_err(|e| {
-                    info!(target: &self.log_key, "Error getting fault state: {}", e);
-                    ()
-                })
-            })
-            .unwrap_or(false))
+        Ok(self.with_owner(|ops_impl| ops_impl.is_fault().unwrap_or(false)))
     }
     fn transition_callback(&self, exit: &OperationsStates, entry: &OperationsStates) {
         trace!(target: &self.log_key, "Transition from {:?}. to: {:?}", exit, entry);

@@ -1,6 +1,6 @@
-use crate::devices::beckhoff::{ek1xxx::Ek1100, el1xxx::*};
+use crate::devices::beckhoff::{ek1xxx::Ek1100, el1xxx::*, el3356::*};
 use crate::devices::device_trait::{Device, DeviceInfo, UnimplementedDevice};
-
+use crate::devices::lenze::i550::I550;
 pub fn make_device(
     dbus: zbus::Connection,
     vendor_id: u32,
@@ -18,6 +18,12 @@ pub fn make_device(
         }
         (El1809Info::VENDOR_ID, El1809Info::PRODUCT_ID) => {
             Box::new(El1809::new(dbus, slave_number, alias_address))
+        }
+        (I550::VENDOR_ID, I550::PRODUCT_ID) => {
+            Box::new(I550::new(dbus, slave_number, alias_address))
+        }
+        (El3356::VENDOR_ID, El3356::PRODUCT_ID) => {
+            Box::new(El3356::new(dbus, slave_number, alias_address))
         }
         _ => Box::new(UnimplementedDevice),
     }

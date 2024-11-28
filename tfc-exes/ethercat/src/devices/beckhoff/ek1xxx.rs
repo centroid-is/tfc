@@ -11,13 +11,13 @@ impl Device for Ek1100 {
     async fn setup<'maindevice, 'group>(
         &mut self,
         device: &mut SubDeviceRef<'maindevice, AtomicRefMut<'group, SubDevice>>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
     async fn process_data<'maindevice, 'group>(
         &mut self,
         device: &mut SubDeviceRef<'maindevice, SubDevicePdi<'group>>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
 }

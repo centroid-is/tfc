@@ -1,0 +1,25 @@
+[package]
+name = "tfc-operations"
+version = "2024.11.0"
+authors = ["Centroid <centroid@centroid.is>"]
+edition = "2021"
+description = "TFC operations service"
+readme = "README.md"
+repository = "https://github.com/centroid-is/tfc-exes"
+homepage = "https://centroid.is"
+keywords = ["tfc", "centroid", "framework", "dbus"]
+categories = ["Development", "System", "Framework"]
+license = "MIT"
+
+[dependencies]
+log = { workspace = true }
+tokio = { workspace = true }
+zbus = { workspace = true }
+tfc = { workspace = true }
+serde = { workspace = true }
+schemars = { workspace = true }
+smlang = { workspace = true }
+futures = { workspace = true }
+futures-channel = { workspace = true }
+parking_lot = { version = "0.12.3", features = ["arc_lock"] }
+derive_more = { version = "1.0.0", features = ["display"] }

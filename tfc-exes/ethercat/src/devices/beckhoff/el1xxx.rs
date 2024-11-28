@@ -13,9 +13,9 @@ pub type El1008 = El1xxx<El1008Info, 8, 1>;
 pub type El1809 = El1xxx<El1809Info, 16, 2>;
 
 // todo use this: https://github.com/rust-lang/rust/issues/76560
-// todo use this: https://github.com/rust-lang/rust/issues/76560
 pub struct El1xxx<D: DeviceInfo + Entries<N>, const N: usize, const ARR_LEN: usize> {
     signals: [Signal<bool>; N],
+    last_bits: [Option<bool>; N],
     log_key: String,
     _marker: PhantomData<D>,
     error: bool,
@@ -29,17 +29,19 @@ impl<D: DeviceInfo + Entries<N>, const N: usize, const ARR_LEN: usize> El1xxx<D,
                 let signal = Signal::new(
                     dbus.clone(),
                     Base::new(
-                        format!("{}_s{}_in{}", D::NAME, subdevice_number, D::ENTRIES[idx]).as_str(),
+                        format!("{}/{}/in{}", D::NAME, subdevice_number, D::ENTRIES[idx]).as_str(),
                         None,
                     ),
                 );
-                // tfc::ipc::dbus::SignalInterface::register(
-                //     signal.base(),
-                //     dbus.clone(),
-                //     signal.subscribe(),
-                // );
+                #[cfg(feature = "dbus-expose")]
+                tfc::ipc::dbus::SignalInterface::register(
+                    signal.base(),
+                    dbus.clone(),
+                    signal.subscribe(),
+                );
                 signal
             }),
+            last_bits: [None; N],
             log_key,
             _marker: PhantomData,
             error: false,
@@ -54,13 +56,13 @@ impl<D: DeviceInfo + Entries<N> + Send + Sync, const N: usize, const ARR_LEN: us
     async fn setup<'maindevice, 'group>(
         &mut self,
         _device: &mut SubDeviceRef<'maindevice, AtomicRefMut<'group, SubDevice>>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
     async fn process_data<'maindevice, 'group>(
         &mut self,
         device: &mut SubDeviceRef<'maindevice, SubDevicePdi<'group>>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let input_data = device.inputs_raw();
 
         if input_data.len() != ARR_LEN && !self.error {
@@ -76,11 +78,15 @@ impl<D: DeviceInfo + Entries<N> + Send + Sync, const N: usize, const ARR_LEN: us
 
         let input_bits = input_data.view_bits::<bitvec::order::Lsb0>();
 
-        for (idx, bit) in input_bits.iter().enumerate() {
-            // let _ = self.signals[idx].async_send(*bit).await.map_err(|e| {
-            //     error!("Error sending signal {}: {}", self.log_key, e);
-            //     e
-            // });
+        for idx in 0..N {
+            let bit = input_bits[idx];
+            if self.last_bits[idx].is_none() || self.last_bits[idx].unwrap() != bit {
+                let _ = self.signals[idx].async_send(bit).await.map_err(|e| {
+                    error!("Error sending signal {}: {}", self.log_key, e);
+                    e
+                });
+            }
+            self.last_bits[idx] = Some(bit);
         }
 
         Ok(())

@@ -14,10 +14,11 @@ use tfc::logger;
 use tfc::progbase;
 use tfc::time::MicroDuration;
 use zbus;
+use zbus::Connection;
 
 mod devices;
 use devices::device::make_device;
-use devices::device_trait::Device;
+use devices::device_trait::{Device, UnimplementedDevice};
 
 /// Maximum number of SubDevices that can be stored. This must be a power of 2 greater than 1.
 const MAX_SUBDEVICES: usize = 16;
@@ -26,7 +27,7 @@ const MAX_PDU_DATA: usize = 1100;
 /// Maximum number of EtherCAT frames that can be in flight at any one time.
 const MAX_FRAMES: usize = 16;
 /// Maximum total PDI length. // LENZE i550 requires 66 bytes
-const PDI_LEN: usize = 66;
+const PDI_LEN: usize = 76;
 
 static PDU_STORAGE: PduStorage<MAX_FRAMES, MAX_PDU_DATA> = PduStorage::new();
 
@@ -39,22 +40,18 @@ struct BusConfig {
 struct Bus {
     main_device: Arc<MainDevice<'static>>,
     config: ConfMan<BusConfig>,
-    // devices: ArrayVec<Box<dyn Device>, MAX_SUBDEVICES>,
+    devices: [Box<dyn Device>; MAX_SUBDEVICES],
     group: Option<SubDeviceGroup<MAX_SUBDEVICES, PDI_LEN, ethercrab::subdevice_group::Op>>,
     log_key: String,
 }
 
 impl Bus {
-    pub fn new(conn: zbus::Connection) -> Self {
+    pub fn new(conn: Connection) -> Self {
         let (tx, rx, pdu_loop) = PDU_STORAGE.try_split().expect("can only split once");
+
         let main_device = Arc::new(MainDevice::new(
             pdu_loop,
-            Timeouts {
-                state_transition: Duration::from_millis(10000),
-                wait_loop_delay: Duration::from_millis(2),
-                mailbox_response: Duration::from_millis(1000),
-                ..Default::default()
-            },
+            Timeouts::default(),
             MainDeviceConfig::default(),
         ));
 
@@ -66,54 +63,71 @@ impl Bus {
         Self {
             main_device,
             config,
-            // devices: ArrayVec::new(),
+            devices: std::array::from_fn(|_| Box::new(UnimplementedDevice) as Box<dyn Device>),
             group: None,
             log_key: "ethercat".to_string(),
         }
     }
-    pub async fn init(&mut self, dbus: zbus::Connection) -> Result<(), Box<dyn Error>> {
-        // self.devices.clear();
+    pub async fn init(
+        &mut self,
+        dbus: zbus::Connection,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        debug!(target: &self.log_key, "Initializing main device");
         let mut group = self
             .main_device
             .init_single_group::<MAX_SUBDEVICES, PDI_LEN>(ethercat_now)
-            .await?;
+            .await?; // BIG TODO HOW CAN I CONFIGURE THIS TIMEOUT, that is putting group into init state? state_transition does not work here
+        debug!(target: &self.log_key, "Initialized main device");
         let mut index: u16 = 0;
-        for mut subdevice in group.iter(&self.main_device) {
+        for (idx, mut subdevice) in group.iter(&self.main_device).enumerate() {
             let identity = subdevice.identity();
-            // let mut device = make_device(
-            //     dbus.clone(),
-            //     identity.vendor_id,
-            //     identity.product_id,
-            //     index,
-            //     subdevice.alias_address(),
-            // );
-            // // TODO: Make futures that can be awaited in parallel
-            // device.setup(&mut subdevice).await.map_err(|e| {
-            //     warn!(target: &self.log_key, "Failed to setup device {}: {}", index, e);
-            //     e
-            // })?;
-            // self.devices.push(device);
+            let mut device = make_device(
+                dbus.clone(),
+                identity.vendor_id,
+                identity.product_id,
+                index,
+                subdevice.alias_address(),
+            );
+            // TODO: Make futures that can be awaited in parallel
+            device.setup(&mut subdevice).await.map_err(|e| {
+                warn!(target: &self.log_key, "Failed to setup device {}: {}", index, e);
+                e
+            })?;
+            self.devices[idx] = device;
             index += 1;
         }
         trace!(target: &self.log_key, "Setup complete for devices: {}", index);
 
+        // let group = group.into_op(&self.main_device).await?;
+
+        let group = group.into_safe_op(&self.main_device).await?;
+
+        debug!(target: &self.log_key, "Group in safe op");
+
+        group.tx_rx(&self.main_device).await?;
+
+        debug!(target: &self.log_key, "Group in safe op Tx/Rx complete");
+
         let group = group.into_op(&self.main_device).await?;
+
+        debug!(target: &self.log_key, "Group in operational");
+
         self.group = Some(group);
-
-        trace!(target: &self.log_key, "Now in operational state");
-
         Ok(())
     }
-    pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
+
+    pub async fn run(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let ref mut group = self.group.as_mut().expect("Group not initialized");
 
-        let mut tick_interval = tokio::time::interval(Duration::from_millis(1));
+        let mut tick_interval = tokio::time::interval(self.config.read().cycle_time.into());
         info!(target: &self.log_key, "Ethercat tick interval: {:?}", self.config.read().cycle_time);
         tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut cnt = 0;
         let mut instant = Instant::now();
         let mut tx_rx_duration = Duration::ZERO;
         let mut process_data_duration = Duration::ZERO;
+        let mut device_errors: [Option<Box<dyn Error + Send + Sync>>; MAX_SUBDEVICES] =
+            std::array::from_fn(|_| None);
         loop {
             let tx_rx_instant = Instant::now();
             group.tx_rx(&self.main_device).await?;
@@ -121,15 +135,21 @@ impl Bus {
 
             let process_data_instant = Instant::now();
             for (device_index, mut subdevice) in group.iter(&self.main_device).enumerate() {
-                // if let Some(device) = self.devices.get_mut(device_index) {
-                //     // device.process_data(&mut subdevice).await?;
-                // }
+                if let Some(device) = self.devices.get_mut(device_index) {
+                    match device.process_data(&mut subdevice).await {
+                        Ok(()) => {
+                            device_errors[device_index] = None;
+                        }
+                        Err(e) => {
+                            if device_errors[device_index].is_none() {
+                                warn!(target: &self.log_key, "Failed to process data for subdevice {}: {}", device_index, e);
+                            }
+                            device_errors[device_index] = Some(e);
+                        }
+                    }
+                }
             }
             process_data_duration += process_data_instant.elapsed();
-            //
-            // tokio::time::sleep(Duration::from_millis(1)).await;
-            // std::thread::sleep(Duration::from_millis(1));
-            // tokio::task::yield_now().await;
             tick_interval.tick().await;
             cnt += 1;
             if cnt % 1000 == 0 {
@@ -142,9 +162,9 @@ impl Bus {
             }
         }
         // If I comment the loop out the load falls down to 0 ish %
-        std::future::pending::<()>().await;
+        // std::future::pending::<()>().await;
 
-        Ok(())
+        // Ok(())
     }
 }
 
@@ -156,7 +176,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", progbase::exe_name());
     println!("{}", progbase::proc_name());
     logger::init_combined_logger()?;
-    trace!(target: "ethercat", "Starting ethercat");
+    debug!(target: "ethercat", "Starting ethercat");
+
     let formatted_name = format!(
         "is.centroid.{}.{}",
         progbase::exe_name(),
@@ -188,6 +209,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // let _ = Arc::new(Mutex::new(OperationsImpl::new(bus.clone())));
 
-    std::future::pending::<()>().await;
+    // std::future::pending::<()>().await;
     Ok(())
 }

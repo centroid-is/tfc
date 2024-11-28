@@ -1,0 +1,54 @@
+[package]
+name = "tfc-ethercat"
+version = "2024.11.0"
+authors = ["Centroid <centroid@centroid.is>"]
+edition = "2021"
+description = "TFC ethercat service"
+readme = "README.md"
+repository = "https://github.com/centroid-is/tfc-exes"
+homepage = "https://centroid.is"
+keywords = ["tfc", "centroid", "framework", "dbus"]
+categories = ["Development", "System", "Framework"]
+license = "MIT"
+
+[dependencies]
+log = { workspace = true }
+tokio = { workspace = true }
+zbus = { workspace = true }
+tfc = { workspace = true }
+serde = { workspace = true }
+schemars = { workspace = true }
+arrayvec = "0.7.6"
+async-trait = "0.1.83"
+atomic_refcell = "0.1.13"
+bitvec = "1.0.1"
+console-subscriber = "0.4.1"
+derive_more = { version = "1.0.0", features = ["display"] }
+ethercrab = "0.5.0"
+futures = "0.3.30"
+futures-channel = "0.3.30"
+tracing = "0.1.40"
+ethercrab-wire = "0.2.0"
+uom = { version = "0.36.0", default-features = false, features = [
+            "autoconvert", # automatic base unit conversion.
+        "usize", "u8", "u16", "u32", "u64", "u128", # Unsigned integer storage types.
+        "isize", "i8", "i16", "i32", "i64", "i128", # Signed integer storage types.
+        # "bigint", "biguint", # Arbitrary width integer storage types.
+        # "rational", "rational32", "rational64", "bigrational", # Integer ratio storage types.
+        # "complex32", "complex64", # Complex floating point storage types.
+        "f32", "f64", # Floating point storage types.
+        "si", "std", # Built-in SI system and std library support.
+        "serde", # Serde support.
+]}
+bitflags = "2.6.0"
+smlang.workspace = true
+ringbuf = "0.4.7"
+
+[[bin]]
+name = "ethercat"
+path = "src/main.rs"
+
+[features]
+default = ["dbus-expose"]
+dbus-expose = []
+opcua-expose = []
