@@ -16,3 +16,4 @@ tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "tracing"] 
 zbus = "4.4.0"
 futures = "0.3.31"
 futures-channel = "0.3.31"
+opcua = { git = "https://github.com/centroid-is/opcua.git", branch = "stable-master", commit = "7742e0d379a5f027fe3cb385bc030b0a622e3c47" }

@@ -9,6 +9,11 @@ use ethercrab::{SubDevice, SubDevicePdi, SubDeviceRef};
 use ethercrab_wire::EtherCrabWireRead;
 use ethercrab_wire::EtherCrabWireWrite;
 use log::warn;
+#[cfg(feature = "opcua-expose")]
+use opcua::server::{
+    node_manager::memory::{InMemoryNodeManager, SimpleNodeManagerImpl},
+    SubscriptionCache,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -1073,6 +1078,41 @@ impl Device for I550 {
     }
     fn product_id(&self) -> u32 {
         Self::PRODUCT_ID
+    }
+    #[cfg(feature = "opcua-expose")]
+    fn opcua_register(
+        &mut self,
+        manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+        subscriptions: Arc<SubscriptionCache>,
+        namespace: u16,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        tfc::ipc::opcua::SlotInterface::new(
+            self.speedratio.base(),
+            self.speedratio.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SlotInterface::new(
+            self.run.base(),
+            self.run.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        for input in self.inputs.iter() {
+            tfc::ipc::opcua::SignalInterface::new(
+                input.base(),
+                input.subscribe(),
+                manager.clone(),
+                subscriptions.clone(),
+                namespace,
+            )
+            .register();
+        }
+        Ok(())
     }
 }
 

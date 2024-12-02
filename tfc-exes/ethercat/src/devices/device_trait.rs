@@ -1,7 +1,13 @@
 use async_trait::async_trait;
 use atomic_refcell::AtomicRefMut;
 use ethercrab::{SubDevice, SubDevicePdi, SubDeviceRef};
+#[cfg(feature = "opcua-expose")]
+use opcua::server::{
+    node_manager::memory::{InMemoryNodeManager, SimpleNodeManagerImpl},
+    SubscriptionCache,
+};
 use std::error::Error;
+use std::sync::Arc;
 
 #[async_trait]
 pub trait Device {
@@ -15,6 +21,13 @@ pub trait Device {
     ) -> Result<(), Box<dyn Error + Send + Sync>>;
     fn vendor_id(&self) -> u32;
     fn product_id(&self) -> u32;
+    #[cfg(feature = "opcua-expose")]
+    fn opcua_register(
+        &mut self,
+        manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+        subscriptions: Arc<SubscriptionCache>,
+        namespace: u16,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 pub trait DeviceInfo {
@@ -44,6 +57,15 @@ impl Device for UnimplementedDevice {
     }
     fn product_id(&self) -> u32 {
         0
+    }
+    #[cfg(feature = "opcua-expose")]
+    fn opcua_register(
+        &mut self,
+        _: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+        _: Arc<SubscriptionCache>,
+        _: u16,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        Ok(())
     }
 }
 

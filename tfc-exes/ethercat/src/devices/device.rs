@@ -10,7 +10,7 @@ pub fn make_device(
     slave_number: u16,
     alias_address: u16,
     name: &str,
-) -> Box<dyn Device> {
+) -> Box<dyn Device + Send + Sync> {
     match (vendor_id, product_id) {
         (Ek1100::VENDOR_ID, Ek1100::PRODUCT_ID) => Box::new(Ek1100),
         (El1002Info::VENDOR_ID, El1002Info::PRODUCT_ID) => {

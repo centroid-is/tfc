@@ -18,6 +18,7 @@ zbus = { workspace = true }
 tfc = { workspace = true }
 serde = { workspace = true }
 schemars = { workspace = true }
+opcua = { workspace = true, optional = true }
 arrayvec = "0.7.6"
 async-trait = "0.1.83"
 atomic_refcell = "0.1.13"
@@ -49,6 +50,6 @@ name = "ethercat"
 path = "src/main.rs"
 
 [features]
-default = ["dbus-expose"]
+default = ["dbus-expose", "opcua-expose"]
 dbus-expose = []
-opcua-expose = []
+opcua-expose = ["dep:opcua"]

@@ -1,12 +1,21 @@
-use arrayvec::ArrayVec;
 use ethercrab::{
     std::{ethercat_now, tx_rx_task},
     MainDevice, MainDeviceConfig, PduStorage, SubDeviceGroup, Timeouts,
 };
 use log::{debug, error, info, trace, warn};
+#[cfg(feature = "opcua-expose")]
+use opcua::server::{
+    node_manager::memory::{
+        simple_node_manager, InMemoryNodeManager, NamespaceMetadata, SimpleNodeManager,
+        SimpleNodeManagerImpl,
+    },
+    ServerBuilder, SubscriptionCache,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
+#[cfg(feature = "opcua-expose")]
+use std::path::PathBuf;
 use std::time::Instant;
 use std::{sync::Arc, time::Duration};
 use tfc::confman::ConfMan;
@@ -39,6 +48,9 @@ struct BusConfig {
         description = "Minimum number of subdevices that must be in the init state before the bus is transitioned into operational"
     )]
     pub subdevice_min_count: u8,
+    #[cfg(feature = "opcua-expose")]
+    #[schemars(description = "Path to the OPCUA server configuration file")]
+    pub opcua_config_path: PathBuf,
 }
 impl Default for BusConfig {
     fn default() -> Self {
@@ -46,21 +58,73 @@ impl Default for BusConfig {
             interface: "eth0".to_string(),
             cycle_time: Duration::from_millis(1).into(),
             subdevice_min_count: 1,
+            #[cfg(feature = "opcua-expose")]
+            opcua_config_path: PathBuf::from(progbase::make_config_file_name("server", "conf")),
         }
     }
+}
+
+#[cfg(feature = "opcua-expose")]
+struct OpcuaServer {
+    server: opcua::server::Server,
+    handle: opcua::server::ServerHandle,
+}
+
+#[cfg(feature = "opcua-expose")]
+impl OpcuaServer {
+    pub fn new(
+        path: impl Into<PathBuf>,
+        namespace_uri: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        let (server, handle) = ServerBuilder::new()
+            .with_config_from(path)
+            .with_node_manager(simple_node_manager(
+                NamespaceMetadata {
+                    namespace_uri: namespace_uri.into(),
+                    ..Default::default()
+                },
+                name.into().as_str(),
+            ))
+            .build()
+            .expect("Failed to create OPC UA Server");
+        Self { server, handle }
+    }
+    pub fn make_handle(&self, namespace: u16) -> OpcuaServerHandle {
+        OpcuaServerHandle {
+            manager: self
+                .handle
+                .node_managers()
+                .get_of_type::<SimpleNodeManager>()
+                .expect("Failed to get SimpleNodeManager"),
+            subscriptions: self.handle.subscriptions().clone(),
+            namespace,
+        }
+    }
+}
+#[cfg(feature = "opcua-expose")]
+struct OpcuaServerHandle {
+    manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+    subscriptions: Arc<SubscriptionCache>,
+    namespace: u16,
 }
 
 struct Bus {
     main_device: Arc<MainDevice<'static>>,
     config: ConfMan<BusConfig>,
-    devices: [Box<dyn Device>; MAX_SUBDEVICES],
+    devices: [Box<dyn Device + Send + Sync>; MAX_SUBDEVICES],
     group: Option<SubDeviceGroup<MAX_SUBDEVICES, PDI_LEN, ethercrab::subdevice_group::Op>>,
     log_key: String,
     expected_working_counter: u16,
+    #[cfg(feature = "opcua-expose")]
+    opcua_handle: OpcuaServerHandle,
 }
 
 impl Bus {
-    pub fn new(conn: Connection) -> Self {
+    pub fn new(
+        conn: Connection,
+        #[cfg(feature = "opcua-expose")] opcua_handle: OpcuaServerHandle,
+    ) -> Self {
         let (tx, rx, pdu_loop) = PDU_STORAGE.try_split().expect("can only split once");
 
         let main_device = Arc::new(MainDevice::new(
@@ -74,10 +138,14 @@ impl Bus {
         Self {
             main_device,
             config,
-            devices: std::array::from_fn(|_| Box::new(UnimplementedDevice) as Box<dyn Device>),
+            devices: std::array::from_fn(|_| {
+                Box::new(UnimplementedDevice) as Box<dyn Device + Send + Sync>
+            }),
             group: None,
             log_key: "ethercat".to_string(),
             expected_working_counter: 0,
+            #[cfg(feature = "opcua-expose")]
+            opcua_handle,
         }
     }
     pub async fn init(
@@ -114,6 +182,12 @@ impl Bus {
                     subdevice.alias_address(),
                     subdevice.name(),
                 );
+                #[cfg(feature = "opcua-expose")]
+                self.devices[idx].opcua_register(
+                    self.opcua_handle.manager.clone(),
+                    self.opcua_handle.subscriptions.clone(),
+                    self.opcua_handle.namespace,
+                )?;
             }
             // TODO: Make futures that can be awaited in parallel
             self.devices[idx].setup(&mut subdevice).await.map_err(|e| {
@@ -202,6 +276,28 @@ impl Bus {
 
         // Ok(())
     }
+
+    pub async fn init_and_run(
+        &mut self,
+        dbus: zbus::Connection,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        loop {
+            loop {
+                let res = self.init(dbus.clone()).await;
+                if let Err(e) = res {
+                    warn!(target: &self.log_key, "Failed to init: {}", e);
+                } else {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+            }
+
+            let _ = self.run().await.map_err(|e| {
+                error!(target: &self.log_key, "Failed to run will retry: {}", e);
+                e
+            });
+        }
+    }
 }
 
 #[tokio::main]
@@ -224,27 +320,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
 
-    let mut bus = Bus::new(dbus.clone());
+    #[cfg(feature = "opcua-expose")]
+    let opcua_server = OpcuaServer::new(
+        "/etc/tfc/ethercat/def/server.conf", // todo as command line arg ?
+        "urn:Ethercat",
+        "Ethercat",
+    );
+    #[cfg(feature = "opcua-expose")]
+    let opcua_handle = opcua_server.make_handle(
+        opcua_server
+            .handle
+            .get_namespace_index("urn:Ethercat")
+            .expect("Failed to get namespace index"),
+    );
 
-    loop {
-        loop {
-            let res = bus.init(dbus.clone()).await;
-            if let Err(e) = res {
-                warn!(target: &bus.log_key, "Failed to init: {}", e);
-            } else {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(1000)).await;
-        }
+    let mut bus = Bus::new(
+        dbus.clone(),
+        #[cfg(feature = "opcua-expose")]
+        opcua_handle,
+    );
 
-        let _ = bus.run().await.map_err(|e| {
-            error!(target: &bus.log_key, "Failed to run will retry: {}", e);
-            e
-        });
-    }
+    tokio::spawn(async move { bus.init_and_run(dbus).await });
 
-    // let _ = Arc::new(Mutex::new(OperationsImpl::new(bus.clone())));
+    #[cfg(feature = "opcua-expose")]
+    tokio::spawn(async move { opcua_server.server.run().await });
 
-    // std::future::pending::<()>().await;
+    std::future::pending::<()>().await;
     Ok(())
 }

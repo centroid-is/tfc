@@ -4,6 +4,11 @@ use atomic_refcell::AtomicRefMut;
 use bitvec::view::BitView;
 use ethercrab::{SubDevice, SubDevicePdi, SubDeviceRef};
 use log::error;
+#[cfg(feature = "opcua-expose")]
+use opcua::server::{
+    node_manager::memory::{InMemoryNodeManager, SimpleNodeManagerImpl},
+    SubscriptionCache,
+};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{error::Error, sync::atomic::AtomicBool};
@@ -16,7 +21,7 @@ pub type El2809 = El2xxx<El2809Info, 16, 2>;
 
 // todo use this: https://github.com/rust-lang/rust/issues/76560
 pub struct El2xxx<D: DeviceInfo + Entries<N>, const N: usize, const ARR_LEN: usize> {
-    _slots: [Slot<bool>; N],
+    slots: [Slot<bool>; N],
     last_bits: [Arc<AtomicBool>; N],
     _marker: PhantomData<D>,
     error: bool,
@@ -30,7 +35,7 @@ impl<D: DeviceInfo + Entries<N>, const N: usize, const ARR_LEN: usize> El2xxx<D,
             prefix = format!("{}/alias/{_subdevice_alias}", D::NAME);
         }
         Self {
-            _slots: core::array::from_fn(|idx| {
+            slots: core::array::from_fn(|idx| {
                 let mut slot = Slot::new(
                     dbus.clone(),
                     Base::new(format!("{prefix}/in{}", D::ENTRIES[idx]).as_str(), None),
@@ -96,6 +101,25 @@ impl<D: DeviceInfo + Entries<N> + Send + Sync, const N: usize, const ARR_LEN: us
     }
     fn product_id(&self) -> u32 {
         D::PRODUCT_ID
+    }
+    #[cfg(feature = "opcua-expose")]
+    fn opcua_register(
+        &mut self,
+        manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+        subscriptions: Arc<SubscriptionCache>,
+        namespace: u16,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        for slot in self.slots.iter() {
+            tfc::ipc::opcua::SlotInterface::new(
+                slot.base(),
+                slot.channel("opcua"),
+                manager.clone(),
+                subscriptions.clone(),
+                namespace,
+            )
+            .register();
+        }
+        Ok(())
     }
 }
 

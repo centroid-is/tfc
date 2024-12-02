@@ -4,8 +4,14 @@ use atomic_refcell::AtomicRefMut;
 use bitvec::view::BitView;
 use ethercrab::{SubDevice, SubDevicePdi, SubDeviceRef};
 use log::error;
+#[cfg(feature = "opcua-expose")]
+use opcua::server::{
+    node_manager::memory::{InMemoryNodeManager, SimpleNodeManagerImpl},
+    SubscriptionCache,
+};
 use std::error::Error;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use tfc::ipc::{Base, Signal};
 
 pub type El1002 = El1xxx<El1002Info, 2, 1>;
@@ -97,6 +103,25 @@ impl<D: DeviceInfo + Entries<N> + Send + Sync, const N: usize, const ARR_LEN: us
     }
     fn product_id(&self) -> u32 {
         D::PRODUCT_ID
+    }
+    #[cfg(feature = "opcua-expose")]
+    fn opcua_register(
+        &mut self,
+        manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+        subscriptions: Arc<SubscriptionCache>,
+        namespace: u16,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        for signal in self.signals.iter() {
+            tfc::ipc::opcua::SignalInterface::new(
+                signal.base(),
+                signal.subscribe(),
+                manager.clone(),
+                subscriptions.clone(),
+                namespace,
+            )
+            .register();
+        }
+        Ok(())
     }
 }
 

@@ -3,6 +3,11 @@ use atomic_refcell::AtomicRefMut;
 use ethercrab::{EtherCrabWireReadWrite, SubDevice, SubDevicePdi, SubDeviceRef};
 use ethercrab_wire::{EtherCrabWireRead, EtherCrabWireWrite};
 use log::{info, warn};
+#[cfg(feature = "opcua-expose")]
+use opcua::server::{
+    node_manager::memory::{InMemoryNodeManager, SimpleNodeManagerImpl},
+    SubscriptionCache,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -711,6 +716,70 @@ impl Device for El3356 {
     }
     fn product_id(&self) -> u32 {
         Self::PRODUCT_ID
+    }
+    #[cfg(feature = "opcua-expose")]
+    fn opcua_register(
+        &mut self,
+        manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+        subscriptions: Arc<SubscriptionCache>,
+        namespace: u16,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        tfc::ipc::opcua::SlotInterface::new(
+            self.calibrate_slot.base(),
+            self.calibrate_slot.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SlotInterface::new(
+            self.zero_calibrate_slot.base(),
+            self.zero_calibrate_slot.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        match &mut self.mode {
+            ModeImpl::Scale(ref mut scale) => {
+                tfc::ipc::opcua::SignalInterface::new(
+                    scale.mass_signal.base(),
+                    scale.mass_signal.subscribe(),
+                    manager.clone(),
+                    subscriptions.clone(),
+                    namespace,
+                )
+                .register();
+                tfc::ipc::opcua::SlotInterface::new(
+                    scale.tare_slot.base(),
+                    scale.tare_slot.channel("opcua"),
+                    manager.clone(),
+                    subscriptions.clone(),
+                    namespace,
+                )
+                .register();
+                tfc::ipc::opcua::SlotInterface::new(
+                    scale.ratio_slot.base(),
+                    scale.ratio_slot.channel("opcua"),
+                    manager.clone(),
+                    subscriptions.clone(),
+                    namespace,
+                )
+                .register();
+            }
+            ModeImpl::Reference(ref mut reference) => {
+                tfc::ipc::opcua::SignalInterface::new(
+                    reference.ratio_signal.base(),
+                    reference.ratio_signal.subscribe(),
+                    manager.clone(),
+                    subscriptions.clone(),
+                    namespace,
+                )
+                .register();
+            }
+        }
+
+        Ok(())
     }
 }
 

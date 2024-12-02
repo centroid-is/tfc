@@ -2,7 +2,13 @@ use crate::devices::device_trait::{Device, DeviceInfo};
 use async_trait::async_trait;
 use atomic_refcell::AtomicRefMut;
 use ethercrab::{SubDevice, SubDevicePdi, SubDeviceRef};
+#[cfg(feature = "opcua-expose")]
+use opcua::server::{
+    node_manager::memory::{InMemoryNodeManager, SimpleNodeManagerImpl},
+    SubscriptionCache,
+};
 use std::error::Error;
+use std::sync::Arc;
 
 pub struct Ek1100;
 
@@ -25,6 +31,15 @@ impl Device for Ek1100 {
     }
     fn product_id(&self) -> u32 {
         Self::PRODUCT_ID
+    }
+    #[cfg(feature = "opcua-expose")]
+    fn opcua_register(
+        &mut self,
+        _: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+        _: Arc<SubscriptionCache>,
+        _: u16,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        Ok(())
     }
 }
 
