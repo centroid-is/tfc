@@ -112,6 +112,7 @@ impl Bus {
                     identity.product_id,
                     index,
                     subdevice.alias_address(),
+                    subdevice.name(),
                 );
             }
             // TODO: Make futures that can be awaited in parallel

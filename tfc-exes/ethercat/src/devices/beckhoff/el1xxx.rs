@@ -24,14 +24,15 @@ pub struct El1xxx<D: DeviceInfo + Entries<N>, const N: usize, const ARR_LEN: usi
 impl<D: DeviceInfo + Entries<N>, const N: usize, const ARR_LEN: usize> El1xxx<D, N, ARR_LEN> {
     pub fn new(dbus: zbus::Connection, subdevice_number: u16, _subdevice_alias: u16) -> Self {
         let log_key = format!("{}:{}", D::NAME, subdevice_number);
+        let mut prefix = format!("{}/{subdevice_number}", D::NAME);
+        if _subdevice_alias != 0 {
+            prefix = format!("{}/alias/{_subdevice_alias}", D::NAME);
+        }
         Self {
             signals: core::array::from_fn(|idx| {
                 let signal = Signal::new(
                     dbus.clone(),
-                    Base::new(
-                        format!("{}/{}/in{}", D::NAME, subdevice_number, D::ENTRIES[idx]).as_str(),
-                        None,
-                    ),
+                    Base::new(format!("{prefix}/I{}", D::ENTRIES[idx]).as_str(), None),
                 );
                 #[cfg(feature = "dbus-expose")]
                 tfc::ipc::dbus::SignalInterface::register(

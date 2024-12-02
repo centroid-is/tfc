@@ -279,7 +279,7 @@ impl Scale {
         let mut ratio_slot = tfc::ipc::Slot::new(
             dbus.clone(),
             tfc::ipc::Base::new(
-                format!("{prefix}_ratio").as_str(),
+                format!("{prefix}/ratio").as_str(),
                 Some("Scale raw input by this factor, useful for onboard vessel scale"),
             ),
         );
@@ -290,7 +290,7 @@ impl Scale {
         }));
         let mass_signal = tfc::ipc::Signal::new(
             dbus.clone(),
-            tfc::ipc::Base::new(format!("{prefix}_mass").as_str(), Some("Mass output in kg")),
+            tfc::ipc::Base::new(format!("{prefix}/mass").as_str(), Some("Mass output in kg")),
         );
         tfc::ipc::dbus::SignalInterface::register(
             mass_signal.base(),
@@ -301,7 +301,7 @@ impl Scale {
         let mut tare_slot = tfc::ipc::Slot::new(
             dbus.clone(),
             tfc::ipc::Base::new(
-                format!("{prefix}_tare").as_str(),
+                format!("{prefix}/tare").as_str(),
                 Some("Offset current weight on cell as tare, meaning it will zero out the current weight"),
             ),
         );
@@ -339,7 +339,7 @@ impl ReferenceScale {
         let ratio_signal = tfc::ipc::Signal::new(
             dbus.clone(),
             tfc::ipc::Base::new(
-                format!("{prefix}_ratio").as_str(),
+                format!("{prefix}/ratio").as_str(),
                 Some("Output ratio of calibration load compared to current load"),
             ),
         );
@@ -404,9 +404,9 @@ pub struct El3356 {
 
 impl El3356 {
     pub fn new(dbus: zbus::Connection, slave_number: u16, alias_address: u16) -> Self {
-        let mut prefix = format!("el3356_{slave_number}");
+        let mut prefix = format!("el3356/{slave_number}");
         if alias_address != 0 {
-            prefix = format!("el3356_alias_{alias_address}");
+            prefix = format!("el3356/alias/{alias_address}");
         }
         let config: ConfMan<Config> = ConfMan::new(dbus.clone(), &prefix);
 
@@ -421,7 +421,7 @@ impl El3356 {
         let mut calibrate_slot = tfc::ipc::Slot::new(
             dbus.clone(),
             tfc::ipc::Base::new(
-                format!("{prefix}_calibrate").as_str(),
+                format!("{prefix}/calibrate").as_str(),
                 Some("Take current weight as calibration point, according to calibration load in config"),
             ),
         );
@@ -439,7 +439,7 @@ impl El3356 {
         let mut zero_calibrate_slot = tfc::ipc::Slot::new(
             dbus.clone(),
             tfc::ipc::Base::new(
-                format!("{prefix}_zero_calibrate").as_str(),
+                format!("{prefix}/zero_calibrate").as_str(),
                 Some("Offset current weight on cell as zero"),
             ),
         );

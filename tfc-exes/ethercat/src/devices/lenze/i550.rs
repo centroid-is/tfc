@@ -779,14 +779,14 @@ fn percentage_to_rpm(percentage: f64, min_rpm: MinSpeed, max_rpm: MaxSpeed) -> i
 
 impl I550 {
     pub fn new(dbus: zbus::Connection, sub_number: u16, alias_address: u16) -> Self {
-        let mut prefix = format!("i550_sub_{sub_number}");
+        let mut prefix = format!("i550/{sub_number}");
         if alias_address != 0 {
-            prefix = format!("i550_alias_{alias_address}");
+            prefix = format!("i550/alias/{alias_address}");
         }
         let config: ConfMan<Config> = ConfMan::new(dbus.clone(), &prefix);
         let speedratio: tfc::ipc::Slot<f64> = tfc::ipc::Slot::new(
             dbus.clone(),
-            tfc::ipc::Base::new(format!("{prefix}_speedratio").as_str(), None),
+            tfc::ipc::Base::new(format!("{prefix}/speedratio").as_str(), None),
         );
         #[cfg(feature = "dbus-expose")]
         tfc::ipc::dbus::SlotInterface::register(
@@ -819,7 +819,7 @@ impl I550 {
 
         let run = tfc::ipc::Slot::new(
             dbus.clone(),
-            tfc::ipc::Base::new(format!("{prefix}_run").as_str(), None),
+            tfc::ipc::Base::new(format!("{prefix}/run").as_str(), None),
         );
         #[cfg(feature = "dbus-expose")]
         tfc::ipc::dbus::SlotInterface::register(run.base(), dbus.clone(), run.channel("dbus"));
@@ -842,7 +842,7 @@ impl I550 {
             inputs: std::array::from_fn(|idx| {
                 let signal = tfc::ipc::Signal::new(
                     dbus.clone(),
-                    tfc::ipc::Base::new(format!("{prefix}_DI{}", idx + 1).as_str(), None),
+                    tfc::ipc::Base::new(format!("{prefix}/DI{}", idx + 1).as_str(), None),
                 );
                 #[cfg(feature = "dbus-expose")]
                 tfc::ipc::dbus::SignalInterface::register(
