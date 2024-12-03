@@ -501,13 +501,13 @@ where
         self
     }
 
-    pub async fn async_send(&mut self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn async_send(&self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.value_sender.send(Some(value))?;
         tokio::task::yield_now().await;
         Ok(())
     }
 
-    pub fn send(&mut self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub fn send(&self, value: T) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.value_sender.send(Some(value))?;
         Ok(())
     }
