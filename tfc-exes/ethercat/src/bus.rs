@@ -8,12 +8,9 @@ use log::{debug, error, info, trace, warn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-#[cfg(feature = "opcua-expose")]
-use std::path::PathBuf;
 use std::time::Instant;
 use std::{sync::Arc, time::Duration};
 use tfc::confman::ConfMan;
-use tfc::progbase;
 use tfc::time::MicroDuration;
 use zbus;
 use zbus::Connection;
@@ -40,9 +37,6 @@ struct BusConfig {
         description = "Minimum number of subdevices that must be in the init state before the bus is transitioned into operational"
     )]
     pub subdevice_min_count: u8,
-    #[cfg(feature = "opcua-expose")]
-    #[schemars(description = "Path to the OPCUA server configuration file")]
-    pub opcua_config_path: PathBuf,
 }
 impl Default for BusConfig {
     fn default() -> Self {
@@ -50,8 +44,6 @@ impl Default for BusConfig {
             interface: "eth0".to_string(),
             cycle_time: Duration::from_millis(1).into(),
             subdevice_min_count: 1,
-            #[cfg(feature = "opcua-expose")]
-            opcua_config_path: PathBuf::from(progbase::make_config_file_name("server", "conf")),
         }
     }
 }
