@@ -1,14 +1,21 @@
 use derive_more::Display;
 use log::{info, trace, warn};
+#[cfg(feature = "opcua-expose")]
+use opcua::server::{
+    node_manager::memory::{InMemoryNodeManager, SimpleNodeManagerImpl},
+    SubscriptionCache,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smlang::statemachine;
 use std::fmt::Debug;
+use std::sync::Arc;
 use std::time::Duration;
 use tfc::confman;
 use tfc::ipc::{Base, Signal, Slot};
 use tfc::time::MilliDuration;
 use tokio::sync::watch;
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::operations::client::OperationsClient;
@@ -96,6 +103,28 @@ impl Default for Storage {
     }
 }
 
+#[cfg(feature = "opcua-expose")]
+pub trait OpcuaExpose {
+    fn opcua_expose(
+        &self,
+        manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+        subscriptions: Arc<SubscriptionCache>,
+        namespace: u16,
+    );
+}
+
+#[cfg(feature = "opcua-expose")]
+impl OpcuaExpose for OperationsStateMachine<OperationsImpl> {
+    fn opcua_expose(
+        &self,
+        manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+        subscriptions: Arc<SubscriptionCache>,
+        namespace: u16,
+    ) {
+        self.context.opcua_expose(manager, subscriptions, namespace);
+    }
+}
+
 pub struct OperationsImpl {
     log_key: String,
     stopped: Signal<bool>,
@@ -125,7 +154,12 @@ pub struct OperationsImpl {
 }
 
 impl OperationsImpl {
-    pub fn spawn(bus: zbus::Connection) -> JoinHandle<()> {
+    pub fn spawn(
+        bus: zbus::Connection,
+    ) -> (
+        Arc<Mutex<OperationsStateMachine<OperationsImpl>>>,
+        JoinHandle<()>,
+    ) {
         let (mode_update_tx, mut mode_update_rx) = watch::channel(OperationsUpdate {
             old_mode: OperationMode::Unknown,
             new_mode: OperationMode::Unknown,
@@ -134,17 +168,20 @@ impl OperationsImpl {
             watch::channel(OperationsEvents::SetStopped("init".to_string()));
 
         let context = OperationsImpl::new(bus.clone(), mode_update_tx.clone(), sm_event_tx.clone());
-        let mut statemachine = OperationsStateMachine::new(context);
+        let statemachine = Arc::new(Mutex::new(OperationsStateMachine::new(context)));
 
         // Process events from the event channel
-        let log_key = statemachine.context.log_key.clone();
-        tokio::spawn(async move {
-            // Create two async tasks
-            let event_task = async {
-                while let Ok(_) = sm_event_rx.changed().await {
-                    let event = sm_event_rx.borrow_and_update();
-                    let event_str = event.to_string();
-                    let res = statemachine
+        let log_key = "Operations"; // this is copy but it's fine
+        (
+            statemachine.clone(),
+            tokio::spawn(async move {
+                // Create two async tasks
+                let event_task = async {
+                    while let Ok(_) = sm_event_rx.changed().await {
+                        let event = sm_event_rx.borrow_and_update().clone();
+                        let event_str = event.to_string();
+                        let mut sm = statemachine.lock().await;
+                        let res = sm
                         .process_event(event.clone())
                         .map_err(|e| match e {
                             OperationsError::ActionFailed(_action) => {
@@ -160,74 +197,75 @@ impl OperationsImpl {
                                 info!(target: &log_key, "During processEvent: {} Transitions failed", event_str);
                             }
                         });
-                    if res.is_ok() {
-                        match event.clone() {
-                            OperationsEvents::SetStopped(reason) => {
-                                statemachine.context.update_stop_reason(&reason);
-                            }
-                            _ => {
-                                statemachine.context.update_stop_reason("");
+                        if res.is_ok() {
+                            match event {
+                                OperationsEvents::SetStopped(reason) => {
+                                    sm.context.update_stop_reason(&reason);
+                                }
+                                _ => {
+                                    sm.context.update_stop_reason("");
+                                }
                             }
                         }
                     }
-                }
-                log::error!("Event channel closed");
-            };
-
-            let dbus_task = async {
-                let client = OperationsClient::new(
-                    sm_event_tx.clone(),
-                    mode_update_tx.subscribe(),
-                    "OperationMode",
-                );
-                let res = bus
-                    .object_server()
-                    .at(crate::operations::client::DBUS_PATH, client)
-                    .await
-                    .expect(&format!(
-                        "Error registering object: {}",
-                        crate::operations::client::DBUS_PATH
-                    ));
-                if !res {
-                    log::error!(
-                        "Interface OperationMode already registered at {}",
-                        crate::operations::client::DBUS_PATH
-                    );
-                }
-                let iface: zbus::InterfaceRef<OperationsClient> = loop {
-                    match bus
-                        .object_server()
-                        .interface(crate::operations::client::DBUS_PATH)
-                        .await
-                    {
-                        Ok(iface) => break iface,
-                        Err(_) => {
-                            tokio::time::sleep(Duration::from_millis(1000)).await;
-                            continue;
-                        }
-                    }
+                    log::error!("Event channel closed");
                 };
-                while let Ok(_) = mode_update_rx.changed().await {
-                    let new_mode_str;
-                    let old_mode_str;
-                    {
-                        let update = mode_update_rx.borrow_and_update();
-                        new_mode_str = update.new_mode.to_string();
-                        old_mode_str = update.old_mode.to_string();
-                    }
-                    let _ = OperationsClient::update(
-                        &iface.signal_context(),
-                        &new_mode_str,
-                        &old_mode_str,
-                    )
-                    .await;
-                }
-                log::error!("Mode update channel closed");
-            };
 
-            // Run both tasks concurrently
-            tokio::join!(event_task, dbus_task);
-        })
+                let dbus_task = async {
+                    let client = OperationsClient::new(
+                        sm_event_tx.clone(),
+                        mode_update_tx.subscribe(),
+                        "OperationMode",
+                    );
+                    let res = bus
+                        .object_server()
+                        .at(crate::operations::client::DBUS_PATH, client)
+                        .await
+                        .expect(&format!(
+                            "Error registering object: {}",
+                            crate::operations::client::DBUS_PATH
+                        ));
+                    if !res {
+                        log::error!(
+                            "Interface OperationMode already registered at {}",
+                            crate::operations::client::DBUS_PATH
+                        );
+                    }
+                    let iface: zbus::InterfaceRef<OperationsClient> = loop {
+                        match bus
+                            .object_server()
+                            .interface(crate::operations::client::DBUS_PATH)
+                            .await
+                        {
+                            Ok(iface) => break iface,
+                            Err(_) => {
+                                tokio::time::sleep(Duration::from_millis(1000)).await;
+                                continue;
+                            }
+                        }
+                    };
+                    while let Ok(_) = mode_update_rx.changed().await {
+                        let new_mode_str;
+                        let old_mode_str;
+                        {
+                            let update = mode_update_rx.borrow_and_update();
+                            new_mode_str = update.new_mode.to_string();
+                            old_mode_str = update.old_mode.to_string();
+                        }
+                        let _ = OperationsClient::update(
+                            &iface.signal_context(),
+                            &new_mode_str,
+                            &old_mode_str,
+                        )
+                        .await;
+                    }
+                    log::error!("Mode update channel closed");
+                };
+
+                // Run both tasks concurrently
+                tokio::join!(event_task, dbus_task);
+            }),
+        )
     }
 
     pub fn new(
@@ -539,6 +577,160 @@ impl OperationsImpl {
             self.bus.clone(),
             self.fault_in.channel("dbus"),
         );
+    }
+
+    #[cfg(feature = "opcua-expose")]
+    pub fn opcua_expose(
+        &self,
+        manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
+        subscriptions: Arc<SubscriptionCache>,
+        namespace: u16,
+    ) {
+        tfc::ipc::opcua::SignalInterface::new(
+            self.stopped.base(),
+            self.stopped.subscribe(),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SignalInterface::new(
+            self.starting.base(),
+            self.starting.subscribe(),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SignalInterface::new(
+            self.running.base(),
+            self.running.subscribe(),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SignalInterface::new(
+            self.stopping.base(),
+            self.stopping.subscribe(),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SignalInterface::new(
+            self.cleaning.base(),
+            self.cleaning.subscribe(),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SignalInterface::new(
+            self.emergency_out.base(),
+            self.emergency_out.subscribe(),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SignalInterface::new(
+            self.fault_out.base(),
+            self.fault_out.subscribe(),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SignalInterface::new(
+            self.maintenance_out.base(),
+            self.maintenance_out.subscribe(),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SignalInterface::new(
+            self.mode.base(),
+            self.mode.subscribe(),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SignalInterface::new(
+            self.mode_str.base(),
+            self.mode_str.subscribe(),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SignalInterface::new(
+            self.stop_reason.base(),
+            self.stop_reason.subscribe(),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+
+        tfc::ipc::opcua::SlotInterface::new(
+            self.starting_finished.base(),
+            self.starting_finished.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SlotInterface::new(
+            self.stopping_finished.base(),
+            self.stopping_finished.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SlotInterface::new(
+            self.run_button.base(),
+            self.run_button.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SlotInterface::new(
+            self.cleaning_button.base(),
+            self.cleaning_button.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SlotInterface::new(
+            self.maintenance_button.base(),
+            self.maintenance_button.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SlotInterface::new(
+            self.emergency_in.base(),
+            self.emergency_in.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
+        tfc::ipc::opcua::SlotInterface::new(
+            self.fault_in.base(),
+            self.fault_in.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
     }
 
     fn transition(
