@@ -578,7 +578,7 @@ impl OperationsStateMachineContext for OperationsImpl {
             Some(time) => {
                 let sm_event_sender = self.sm_event_sender.clone();
                 self.starting_handle.replace(tokio::spawn(async move {
-                    tokio::time::sleep(time).await;
+                    tokio::time::sleep(time.into()).await;
                     let _ = sm_event_sender
                         .send(OperationsEvents::StartingTimeout)
                         .map_err(|e| {
@@ -597,6 +597,9 @@ impl OperationsStateMachineContext for OperationsImpl {
         }
     }
     fn on_exit_starting(&mut self) {
+        if let Some(handle) = self.starting_handle.take() {
+            handle.abort();
+        }
         let _ = self.starting.send(false);
     }
     fn on_entry_running(&mut self) {
@@ -613,7 +616,7 @@ impl OperationsStateMachineContext for OperationsImpl {
             Some(time) => {
                 let sm_event_sender = self.sm_event_sender.clone();
                 self.stopping_handle.replace(tokio::spawn(async move {
-                    tokio::time::sleep(time).await;
+                    tokio::time::sleep(time.into()).await;
                     let _ = sm_event_sender
                         .send(OperationsEvents::StoppingTimeout)
                         .map_err(|e| {
@@ -632,6 +635,9 @@ impl OperationsStateMachineContext for OperationsImpl {
         }
     }
     fn on_exit_stopping(&mut self) {
+        if let Some(handle) = self.stopping_handle.take() {
+            handle.abort();
+        }
         let _ = self.stopping.send(false);
     }
     fn on_entry_cleaning(&mut self) {
