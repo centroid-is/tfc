@@ -3,11 +3,11 @@ use log::{info, trace, warn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use smlang::statemachine;
-use std::any::Any;
 use std::fmt::Debug;
 use std::time::Duration;
 use tfc::confman;
 use tfc::ipc::{Base, Signal, Slot};
+use tfc::time::MilliDuration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -25,6 +25,8 @@ statemachine! {
         Stopped + RunButton = Starting,
         Starting + StartingTimeout = Running,
         Starting + StartingFinished = Running,
+        Starting + RunButton = Stopped, // todo discuss should this be to stopping?
+        Starting + SetStopped(String) = Stopped, // todo discuss should this be to stopping?
         Running + RunButton = Stopping,
         Running + SetStopped(String) = Stopping,
         Stopping + StoppingTimeout = Stopped,
@@ -73,14 +75,25 @@ impl From<&OperationsStates> for OperationMode {
     }
 }
 
-#[derive(Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 struct Storage {
-    #[schemars(description = "Delay to run initial sequences to get the equipment ready.")]
-    startup_time: Option<Duration>,
     #[schemars(
-        description = "Delay to run shutdown sequences to get the equipment ready for being stopped."
+        description = "Delay to run initial sequences to get the equipment ready. Milliseconds"
     )]
-    stopping_time: Option<Duration>,
+    startup_time: Option<MilliDuration>,
+    #[schemars(
+        description = "Delay to run shutdown sequences to get the equipment ready for being stopped. Milliseconds"
+    )]
+    stopping_time: Option<MilliDuration>,
+}
+
+impl Default for Storage {
+    fn default() -> Self {
+        Self {
+            startup_time: Some(Duration::from_millis(0).into()),
+            stopping_time: Some(Duration::from_millis(0).into()),
+        }
+    }
 }
 
 pub struct OperationsImpl {
@@ -306,10 +319,7 @@ impl OperationsImpl {
                     Some("Fault input signal, true when fault is active"),
                 ),
             ),
-            confman: confman::ConfMan::new(bus.clone(), "Operations").with_default(Storage {
-                startup_time: Some(Duration::from_secs(0)),
-                stopping_time: Some(Duration::from_secs(0)),
-            }),
+            confman: confman::ConfMan::new(bus.clone(), "Operations"),
             sm_event_sender,
             mode_update_sender,
             starting_handle: None,
