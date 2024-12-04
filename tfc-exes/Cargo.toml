@@ -10,7 +10,7 @@ log = "0.4.22"
 schemars = "0.8.21"
 serde = "1.0.210"
 smlang = { version = "0.8.0", features = ["graphviz"] }
-tfc = { git = "https://github.com/centroid-is/tfc.git", branch = "main", commit = "35423833126afb8e5e28868724cefb081982ca19" }
+tfc = { git = "https://github.com/centroid-is/tfc.git", branch = "main", commit = "812f4243c54b004bc16594712055a539e6851027" }
 # tfc = { path = "../framework-rs" }
 tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "tracing"] }
 zbus = "4.4.0"
