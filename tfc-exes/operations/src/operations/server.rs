@@ -18,15 +18,15 @@ use tokio::sync::watch;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::operations::client::OperationsClient;
 use crate::operations::common::{OperationMode, OperationsUpdate};
+use crate::operations::dbus_service::OperationsDBusService;
 // Define the state machine transitions and actions
 statemachine! {
     name: Operations,
     derive_states: [Debug, Display, Clone],
     derive_events: [Debug, Display, Clone],
     transitions: {
-        *Init + SetStopped(String) = Stopped,
+        *Init + SetStopped(String) = Stopped, // activate on_entry of stopped to begin with
 
         Stopped + SetStarting = Starting,
         Stopped + RunButton = Starting,
@@ -212,29 +212,29 @@ impl OperationsImpl {
                 };
 
                 let dbus_task = async {
-                    let client = OperationsClient::new(
+                    let client = OperationsDBusService::new(
                         sm_event_tx.clone(),
                         mode_update_tx.subscribe(),
                         "OperationMode",
                     );
                     let res = bus
                         .object_server()
-                        .at(crate::operations::client::DBUS_PATH, client)
+                        .at(crate::operations::dbus_service::DBUS_PATH, client)
                         .await
                         .expect(&format!(
                             "Error registering object: {}",
-                            crate::operations::client::DBUS_PATH
+                            crate::operations::dbus_service::DBUS_PATH
                         ));
                     if !res {
                         log::error!(
                             "Interface OperationMode already registered at {}",
-                            crate::operations::client::DBUS_PATH
+                            crate::operations::dbus_service::DBUS_PATH
                         );
                     }
-                    let iface: zbus::InterfaceRef<OperationsClient> = loop {
+                    let iface: zbus::InterfaceRef<OperationsDBusService> = loop {
                         match bus
                             .object_server()
-                            .interface(crate::operations::client::DBUS_PATH)
+                            .interface(crate::operations::dbus_service::DBUS_PATH)
                             .await
                         {
                             Ok(iface) => break iface,
@@ -252,7 +252,7 @@ impl OperationsImpl {
                             new_mode_str = update.new_mode.to_string();
                             old_mode_str = update.old_mode.to_string();
                         }
-                        let _ = OperationsClient::update(
+                        let _ = OperationsDBusService::update(
                             &iface.signal_context(),
                             &new_mode_str,
                             &old_mode_str,

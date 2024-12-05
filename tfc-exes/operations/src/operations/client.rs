@@ -1,80 +1,216 @@
+use futures::stream::StreamExt;
+use log::{info, trace};
+use std::cell::RefCell;
+use std::sync::Arc;
+use tokio::sync::{watch, Notify};
+use tokio::task::JoinHandle;
+use zbus::proxy;
+
 use crate::operations::common::{OperationMode, OperationsUpdate};
-use crate::operations::server::OperationsEvents;
 
-use log::info;
-use tokio::sync::watch;
-use zbus::interface;
-
-pub static DBUS_PATH: &str = "/is/centroid/OperationMode";
+#[proxy(
+    interface = "is.centroid.OperationMode" /*DBUS_INTERFACE*/,
+    default_service = "is.centroid.operations.def",
+    default_path = "/is/centroid/OperationMode" /*DBUS_PATH*/,
+)]
+pub trait OperationsDBusClient {
+    #[zbus(property)]
+    fn mode(&self) -> zbus::fdo::Result<String>;
+    #[zbus(signal)]
+    fn update(&self, new_mode: &str, old_mode: &str) -> zbus::fdo::Result<()>;
+    async fn set_mode(&self, mode_str: &str) -> zbus::fdo::Result<()>;
+    async fn stop_with_reason(&self, reason: &str) -> zbus::fdo::Result<()>;
+}
 
 pub struct OperationsClient {
+    #[allow(dead_code)]
+    update_sender: watch::Sender<OperationsUpdate>,
+    #[allow(dead_code)]
+    set_mode_sender: watch::Sender<String>,
+    #[allow(dead_code)]
+    stop_sender: watch::Sender<String>,
+    handles: RefCell<Vec<JoinHandle<()>>>, // I want non mutable self in the implementation
+    #[allow(dead_code)]
     log_key: String,
-    sm_event_sender: watch::Sender<OperationsEvents>,
-    mode_update_receiver: watch::Receiver<OperationsUpdate>,
 }
 
 impl OperationsClient {
-    pub fn new(
-        sm_event_sender: watch::Sender<OperationsEvents>,
-        mode_update_receiver: watch::Receiver<OperationsUpdate>,
-        key: &str,
-    ) -> Self {
+    #[allow(dead_code)]
+    pub fn new(bus: zbus::Connection) -> Self {
+        let (update_sender, _) = watch::channel(OperationsUpdate::default());
+        let (set_mode_sender, mut set_mode_receiver) = watch::channel(String::default());
+        let (stop_sender, mut stop_receiver) = watch::channel(String::default());
+        let log_key = "OperationsClient".to_string();
+        let log_key_cp = log_key.clone();
+
+        let update_sender_cp = update_sender.clone();
+        let handle = tokio::spawn(async move {
+            let proxy = OperationsDBusClientProxy::builder(&bus)
+                .cache_properties(zbus::CacheProperties::No)
+                .build()
+                .await
+                .expect("Failed to create OperationsDBusClientProxy");
+            let mut update_receiver = proxy
+                .receive_update()
+                .await
+                .expect("Failed to receive update");
+            loop {
+                tokio::select! {
+                    _ = set_mode_receiver.changed() => {
+                        let mode = set_mode_receiver.borrow_and_update().clone();
+                        trace!(target: &log_key_cp, "Proxying set mode to {:?}", mode);
+                        proxy.set_mode(&mode).await.expect("Failed to set mode");
+                    }
+                    _ = stop_receiver.changed() => {
+                        let reason = stop_receiver.borrow_and_update().clone();
+                        trace!(target: &log_key_cp, "Proxying stop with reason {:?}", reason);
+                        proxy.stop_with_reason(&reason).await.expect("Failed to send stop");
+                    }
+                    Some(update) = update_receiver.next() => {
+                        let args = update.args().expect("Failed to get update args");
+                        let new_mode: OperationMode = args.new_mode().parse().expect("Failed to parse new mode");
+                        let old_mode: OperationMode = args.old_mode().parse().expect("Failed to parse old mode");
+                        if new_mode == old_mode || new_mode == OperationMode::Unknown {
+                            info!(target: &log_key_cp, "Ignoring update: new_mode={:?}, old_mode={:?}", new_mode, old_mode);
+                            continue;
+                        }
+                        trace!(target: &log_key_cp, "Proxying update: new_mode={:?}, old_mode={:?}", new_mode, old_mode);
+                        update_sender_cp.send(OperationsUpdate {
+                            new_mode,
+                            old_mode,
+                        }).expect("Failed to send update");
+                    }
+                }
+            }
+        });
         Self {
-            log_key: key.to_string(),
-            sm_event_sender,
-            mode_update_receiver,
+            update_sender,
+            set_mode_sender,
+            stop_sender,
+            handles: RefCell::new(vec![handle]),
+            log_key,
+        }
+    }
+    #[allow(dead_code)]
+    pub fn set_mode(&self, mode: OperationMode) {
+        trace!(target: &self.log_key, "Sending set mode to {:?}", mode);
+        self.set_mode_sender
+            .send(mode.to_string())
+            .expect("Failed to send mode");
+    }
+    #[allow(dead_code)]
+    pub fn stop(&self, reason: &str) {
+        self.stop_sender
+            .send(reason.to_string())
+            .expect("Failed to send stop");
+    }
+    #[allow(dead_code)]
+    pub fn subscribe_updates(&self) -> watch::Receiver<OperationsUpdate> {
+        self.update_sender.subscribe()
+    }
+    #[allow(dead_code)]
+    pub fn subscribe_entry_mode(&self, operation_mode: OperationMode) -> Arc<Notify> {
+        let mut update_receiver = self.subscribe_updates();
+        let notify = Arc::new(Notify::new());
+        let notify_cp = notify.clone();
+        let log_key = self.log_key.clone();
+        self.handles.borrow_mut().push(tokio::spawn(async move {
+            trace!(target: &log_key, "Subscribed to entry of {:?}", operation_mode);
+            while let Ok(_) = update_receiver.changed().await {
+                let update = update_receiver.borrow_and_update();
+                if update.new_mode == operation_mode {
+                    notify.notify_waiters();
+                }
+            }
+        }));
+        notify_cp
+    }
+    #[allow(dead_code)]
+    pub fn subscribe_exit_mode(&self, operation_mode: OperationMode) -> Arc<Notify> {
+        let mut update_receiver = self.subscribe_updates();
+        let notify = Arc::new(Notify::new());
+        let notify_cp = notify.clone();
+        let log_key = self.log_key.clone();
+        self.handles.borrow_mut().push(tokio::spawn(async move {
+            trace!(target: &log_key, "Subscribed to exit of {:?}", operation_mode);
+            while let Ok(_) = update_receiver.changed().await {
+                let update = update_receiver.borrow_and_update();
+                if update.old_mode == operation_mode {
+                    notify.notify_waiters();
+                }
+            }
+        }));
+        notify_cp
+    }
+    #[allow(dead_code)]
+    pub fn mode(&self) -> OperationMode {
+        self.update_sender.borrow().new_mode
+    }
+}
+
+impl Drop for OperationsClient {
+    fn drop(&mut self) {
+        for handle in self.handles.borrow_mut().drain(..) {
+            handle.abort();
         }
     }
 }
-#[interface(name = "is.centroid.OperationMode")]
-impl OperationsClient {
-    #[zbus(property)]
-    async fn mode(&self) -> Result<String, zbus::fdo::Error> {
-        Ok(self.mode_update_receiver.borrow().new_mode.to_string())
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operations::server::{OperationsImpl, OperationsStateMachine};
+    use tokio::sync::Mutex;
+
+    struct TestContext {
+        _bus: zbus::Connection,
+        client: OperationsClient,
+        _server: Arc<Mutex<OperationsStateMachine<OperationsImpl>>>,
     }
 
-    #[zbus(signal)]
-    pub async fn update(
-        signal_ctxt: &zbus::SignalContext<'_>,
-        new_mode: &str,
-        old_mode: &str,
-    ) -> zbus::Result<()>;
+    impl TestContext {
+        async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+            // tfc::progbase::init();
+            tfc::logger::init_test_logger(log::LevelFilter::Trace)?;
+            let _bus = zbus::connection::Builder::system()?
+                .name("is.centroid.operations.def")?
+                .build()
+                .await?;
+            let client = OperationsClient::new(_bus.clone());
+            let (_server, _) = OperationsImpl::spawn(_bus.clone());
+            Ok(Self {
+                _bus,
+                client,
+                _server,
+            })
+        }
+    }
 
-    async fn set_mode(&mut self, mode_str: &str) -> Result<(), zbus::fdo::Error> {
-        info!(target: &self.log_key, "Trying to set operation mode to {:?}", mode_str);
-        let mode: OperationMode = mode_str.parse().map_or(OperationMode::Unknown, |mode| mode);
-        let event = match mode {
-            OperationMode::Unknown => {
-                let err_msg = format!("Invalid operation mode: {}", mode_str);
-                info!(target: &self.log_key, "{}", err_msg);
-                return Err(zbus::fdo::Error::Failed(err_msg));
-            }
-            OperationMode::Stopped | OperationMode::Stopping => {
-                OperationsEvents::SetStopped("manual".to_string())
-            }
-            OperationMode::Starting | OperationMode::Running => OperationsEvents::SetStarting,
-            OperationMode::Cleaning => OperationsEvents::SetCleaning,
-            OperationMode::Emergency => OperationsEvents::SetEmergency,
-            OperationMode::Fault => OperationsEvents::SetFault,
-            OperationMode::Maintenance => OperationsEvents::SetMaintenance,
+    #[tokio::test]
+    async fn test_running_and_stopped() {
+        let ctx = TestContext::new()
+            .await
+            .expect("Failed to create test context");
+
+        // Test entering running
+        let running_notify = ctx.client.subscribe_entry_mode(OperationMode::Running);
+        let task = async {
+            ctx.client.set_mode(OperationMode::Running);
         };
-        self.sm_event_sender.send(event).map_err(|e| {
-            let err_msg = format!("Error sending stop: {}", e);
-            info!(target: &self.log_key, "{}", err_msg);
-            zbus::fdo::Error::Failed(err_msg)
-        })?;
-        Ok(())
-    }
+        tokio::join!(running_notify.notified(), task);
+        assert_eq!(ctx.client.mode(), OperationMode::Running);
 
-    async fn stop_with_reason(&mut self, reason: &str) -> Result<(), zbus::fdo::Error> {
-        self.sm_event_sender
-            .send(OperationsEvents::SetStopped(reason.to_string()))
-            .map_err(|e| {
-                let err_msg = format!("Error sending stop: {}", e);
-                info!(target: &self.log_key, "{}", err_msg);
-                zbus::fdo::Error::Failed(err_msg)
-            })?;
-
-        Ok(())
+        // Test exiting running and entering stopped
+        let running_exit_notify = ctx.client.subscribe_exit_mode(OperationMode::Running);
+        let stopped_notify = ctx.client.subscribe_entry_mode(OperationMode::Stopped);
+        let task = async {
+            ctx.client.set_mode(OperationMode::Stopped);
+        };
+        tokio::join!(
+            running_exit_notify.notified(),
+            stopped_notify.notified(),
+            task
+        );
+        assert_eq!(ctx.client.mode(), OperationMode::Stopped);
     }
 }

@@ -51,6 +51,15 @@ impl ToString for OperationMode {
 }
 
 pub struct OperationsUpdate {
-    pub old_mode: OperationMode,
     pub new_mode: OperationMode,
+    pub old_mode: OperationMode,
+}
+
+impl Default for OperationsUpdate {
+    fn default() -> Self {
+        Self {
+            new_mode: OperationMode::Unknown,
+            old_mode: OperationMode::Unknown,
+        }
+    }
 }
