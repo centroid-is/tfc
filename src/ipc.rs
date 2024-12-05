@@ -363,6 +363,7 @@ where
         + Serialize
         + Deserialize
         + std::fmt::Debug
+        + Clone
         + Sync
         + Send
         + 'static,
@@ -516,6 +517,32 @@ where
     pub fn subscribe(&self) -> watch::Receiver<Option<T>> {
         // todo I would like to prioritize the zmq send over this
         self.value_sender.subscribe()
+    }
+
+    // Offer a channel to send changes to the signal
+    pub fn channel(&self, name: &str) -> (watch::Sender<Option<T>>, watch::Receiver<Option<T>>) {
+        let (tx, mut rx) = watch::channel(None as Option<T>);
+        let log_key = self.base.log_key.clone();
+        let self_tx = self.value_sender.clone();
+        let name = name.to_string();
+        tokio::spawn(async move {
+            loop {
+                match rx.changed().await {
+                    Ok(_) => {
+                        let value = rx.borrow_and_update().clone();
+                        trace!(target: &log_key, "Changed {} value to {:?}", name, value); // OPC-UA Changed Temperature value to 10
+                                                                                           // DBUS-Tinker Changed Temperature value to -1
+                                                                                           // Override current slot value with tinkered value.
+                        self_tx.send(value).expect("Error sending value to slot");
+                    }
+                    Err(_) => {
+                        warn!(target: &log_key, "Channel name dropped: {}", name);
+                        break;
+                    }
+                }
+            }
+        });
+        (tx, self.value_sender.subscribe())
     }
 
     pub async fn init_task(&mut self) -> Result<(), tokio::task::JoinError> {
