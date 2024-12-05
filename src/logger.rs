@@ -56,12 +56,11 @@ impl Log for CombinedLogger {
     }
 }
 
-pub fn init_test_logger() -> Result<(), SetLoggerError> {
+pub fn init_test_logger(level: log::LevelFilter) -> Result<(), SetLoggerError> {
     let env_logger: env_logger::Logger = env_logger::Builder::from_env(env_logger::Env::default())
-        .filter_level(log::LevelFilter::Debug)
+        .filter_level(level)
         .build();
-    log::set_boxed_logger(Box::new(env_logger))
-        .map(|()| log::set_max_level(log::LevelFilter::Debug))?;
+    log::set_boxed_logger(Box::new(env_logger)).map(|()| log::set_max_level(level))?;
     Ok(())
 }
 
