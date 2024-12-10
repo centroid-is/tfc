@@ -73,7 +73,10 @@ impl Bus {
         ));
 
         let config = ConfMan::<BusConfig>::new(conn.clone(), "bus");
-        tokio::spawn(tx_rx_task(&config.read().interface, tx, rx).expect("spawn TX/RX task"));
+        tokio::spawn(tx_rx_task(&config.read().interface, tx, rx).expect(
+            "spawn TX/RX task failed on interface: {}",
+            config.read().interface,
+        ));
         Self {
             main_device,
             config,
