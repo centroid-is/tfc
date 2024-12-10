@@ -153,13 +153,13 @@ pub trait Entries<const N: usize> {
     const ENTRIES: [u8; N];
 }
 impl Entries<4> for El2794Info {
-    const ENTRIES: [u8; 4] = [1, 5, 4, 8];
+    const ENTRIES: [u8; 4] = [1, 2, 3, 4];
 }
 impl Entries<4> for El2004Info {
-    const ENTRIES: [u8; 4] = [1, 5, 4, 8];
+    const ENTRIES: [u8; 4] = [1, 2, 3, 4];
 }
 impl Entries<8> for El2008Info {
-    const ENTRIES: [u8; 8] = [1, 5, 2, 6, 3, 7, 4, 8];
+    const ENTRIES: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 }
 impl Entries<16> for El2809Info {
     const ENTRIES: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
