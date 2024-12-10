@@ -116,7 +116,7 @@ where
         let short_name = self.base.name.clone();
         self.recv_task = Some(tokio::spawn(async move {
             let mut sock: Option<SubSocket> = None;
-            let mut local_last_value: Option<T> = None;
+            let mut unfiltered_last_value: Option<T> = None;
             let filters = Filters::new(
                 bus.clone(),
                 format!("filters/{}", Base::<T>::type_and_name(&short_name)).as_str(),
@@ -141,16 +141,17 @@ where
                                 let mut cursor = io::Cursor::new(flattened_buffer);
                                 let deserialized_packet =
                                     DeserializePacket::<T>::deserialize(&mut cursor).expect("Deserialization failed");
-                                match filters.process(deserialized_packet.value, &local_last_value).await {
+                                let new_value = deserialized_packet.value;
+                                // todo can we do this without cloning?
+                                match filters.process(new_value.clone(), &unfiltered_last_value).await {
                                     Ok(filtered) => {
-                                        local_last_value = Some(filtered);
-                                        // todo can we do this without cloning?
-                                        new_value_sender.send(local_last_value.clone()).expect("Failed to send new value");
+                                        new_value_sender.send(Some(filtered)).expect("Failed to send new value");
                                     }
                                     Err(e) => {
                                         debug!(target: &log_key, "Error processing/filtering value: {}", e);
                                     }
                                 }
+                                unfiltered_last_value = Some(new_value);
                             },
                             Err(e) => {
                                 error!(target: &log_key, "Error receiving message: {}", e);
