@@ -38,7 +38,7 @@ impl<D: DeviceInfo + Entries<N>, const N: usize, const ARR_LEN: usize> El2xxx<D,
             slots: core::array::from_fn(|idx| {
                 let mut slot = Slot::new(
                     dbus.clone(),
-                    Base::new(format!("{prefix}/in{}", D::ENTRIES[idx]).as_str(), None),
+                    Base::new(format!("{prefix}/O{}", D::ENTRIES[idx]).as_str(), None),
                 );
                 #[cfg(feature = "dbus-expose")]
                 tfc::ipc::dbus::SlotInterface::register(
