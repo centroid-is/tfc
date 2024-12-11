@@ -1,0 +1,12 @@
+[package]
+name = "tfc-signal-source"
+version = "2024.11.0"
+authors = ["Centroid <centroid@centroid.is>"]
+edition = "2021"
+description = "TFC signal source service"
+readme = "README.md"
+repository = "https://github.com/centroid-is/tfc-exes"
+homepage = "https://centroid.is"
+keywords = ["tfc", "centroid", "framework", "dbus"]
+categories = ["Development", "System", "Framework"]
+license = "MIT"

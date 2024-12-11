@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "ethercat",
+    "operations",
+    "signal_source",
+]
+
+[workspace.dependencies]
+log = "0.4.22"
+schemars = "0.8.21"
+serde = "1.0.210"
+smlang = { version = "0.8.0", features = ["graphviz"] }
+tfc = { git = "https://github.com/centroid-is/tfc.git", branch = "main", commit = "e83230eff543d7663d339231f25e93f6b703e70c" }
+# tfc = { path = "../framework-rs" }
+tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "tracing"] }
+zbus = "4.4.0"
+futures = "0.3.31"
+futures-channel = "0.3.31"
+opcua = { git = "https://github.com/centroid-is/opcua.git", branch = "stable-master", commit = "7742e0d379a5f027fe3cb385bc030b0a622e3c47" }
