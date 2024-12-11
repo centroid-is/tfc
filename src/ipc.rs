@@ -170,9 +170,6 @@ where
         let bus_cp = bus.clone();
         let full_name = self.base.full_name();
 
-        let connect_change_before_register = std::sync::Arc::new(tokio::sync::Notify::new());
-        let connect_change_before_register_clone = connect_change_before_register.clone();
-
         self.register_task = Some(tokio::spawn(async move {
             let proxy = IpcRulerProxy::builder(&bus_cp)
                 .cache_properties(zbus::CacheProperties::No)
@@ -180,10 +177,7 @@ where
                 .await
                 .unwrap();
             // This is a hack to make sure the connection change is received before the slot is registered
-            connect_change_before_register_clone.notified().await;
-            drop(connect_change_before_register_clone);
-            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-            // End of hack
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             debug!(target: &log_key, "Registering slot: {}", full_name);
             loop {
                 let res = proxy
@@ -210,8 +204,6 @@ where
                 .build()
                 .await
                 .unwrap();
-            connect_change_before_register.notify_waiters();
-            drop(connect_change_before_register);
             debug!(target: &log_key, "Awaiting connection change for slot: {}", my_name);
             loop {
                 let res = proxy.receive_connection_change().await;
