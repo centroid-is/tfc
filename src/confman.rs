@@ -1,5 +1,5 @@
 use core::panic;
-use log::{log, Level};
+use log::{debug, log, Level};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -325,6 +325,7 @@ struct FileStorage<T> {
 
 impl<T: for<'de> Deserialize<'de> + Serialize + JsonSchema + Default> FileStorage<T> {
     fn new(path: &PathBuf) -> Self {
+        debug!("Creating FileStorage with path: {}", path.display());
         if let Some(parent) = path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
                 panic!(
