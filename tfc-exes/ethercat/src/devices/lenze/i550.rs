@@ -975,6 +975,24 @@ impl Device for I550 {
         device
             .sdo_write_value_index(self.config.read().acceleration.denominator)
             .await?;
+        device
+            .sdo_write_value_index(self.config.read().rated_current)
+            .await?;
+        device
+            .sdo_write_value_index(self.config.read().rated_frequency)
+            .await?;
+        device
+            .sdo_write_value_index(self.config.read().rated_voltage)
+            .await?;
+        device
+            .sdo_write_value_index(self.config.read().rated_power)
+            .await?;
+        device
+            .sdo_write_value_index(self.config.read().cosine_phi)
+            .await?;
+        device
+            .sdo_write_value_index(self.config.read().max_current)
+            .await?;
         if let Some(stator_resistance) = self.config.read().stator_resistance {
             device.sdo_write_value_index(stator_resistance).await?;
         }
@@ -986,6 +1004,7 @@ impl Device for I550 {
         device
             .sdo_write_value_index(self.config.read().analog_input_1)
             .await?;
+
         // analog input 1 no response on error
         device.sdo_write(0x2636, 10, 0 as u8).await?;
 
