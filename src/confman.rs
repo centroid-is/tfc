@@ -1,5 +1,5 @@
 use core::panic;
-use log::{log, Level};
+use log::{debug, error, log, Level};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -231,6 +231,11 @@ impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sy
         }
         let mut value = self.storage.value_mut();
         *value = deserialized.unwrap();
+        self.storage.save_to_file().map_err(|e| {
+            let err_msg = format!("Failed to save to file: {}", e);
+            error!(target: &self.log_key, "{}", err_msg);
+            zbus::fdo::Error::Failed(err_msg)
+        })?;
         Ok(())
     }
     #[zbus(property)]
