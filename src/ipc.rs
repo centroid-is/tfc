@@ -206,7 +206,9 @@ where
                 .unwrap();
             debug!(target: &log_key, "Awaiting connection change for slot: {}", my_name);
             loop {
-                let res = proxy.receive_connection_change().await;
+                let res = proxy
+                    .receive_connection_change_with_args(&[(0, my_name.as_str())])
+                    .await;
                 if res.is_ok() {
                     let args = res.unwrap().next().await.unwrap();
                     let slot_name = args.args().unwrap().slot_name().to_string();
@@ -220,6 +222,7 @@ where
                             });
                     }
                 } else {
+                    error!(target: &log_key, "Failed to receive connection change: {}", res.err().unwrap());
                 }
             }
         }));
