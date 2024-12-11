@@ -165,37 +165,8 @@ where
 
     pub fn register(mut self, bus: zbus::Connection) -> Self {
         let description = self.base.description.clone().unwrap_or(String::new());
-        let log_key = self.base.log_key.clone();
         let sock_sender = self.sock_sender.clone();
-        let bus_cp = bus.clone();
         let full_name = self.base.full_name();
-
-        self.register_task = Some(tokio::spawn(async move {
-            let proxy = IpcRulerProxy::builder(&bus_cp)
-                .cache_properties(zbus::CacheProperties::No)
-                .build()
-                .await
-                .unwrap();
-            // This is a hack to make sure the connection change is received before the slot is registered
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            debug!(target: &log_key, "Registering slot: {}", full_name);
-            loop {
-                let res = proxy
-                    .register_slot(
-                        full_name.as_str(),
-                        description.as_str(),
-                        T::type_identifier(),
-                    )
-                    .await;
-                if res.is_ok() {
-                    break;
-                } else {
-                    trace!(target: &log_key, "Slot Registration failed: '{}', will try again in 1s", res.err().unwrap());
-                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                }
-            }
-        }));
-
         let my_name = self.base.full_name();
         let log_key = self.base.log_key.clone();
         self.connection_change_task = Some(tokio::spawn(async move {
@@ -204,11 +175,19 @@ where
                 .build()
                 .await
                 .unwrap();
-            debug!(target: &log_key, "Awaiting connection change for slot: {}", my_name);
-            loop {
+            debug!(target: &log_key, "Creating connection change stream for slot: {}", my_name);
+            let mut connection_change_stream = loop {
                 let res = proxy.receive_connection_change().await;
                 if res.is_ok() {
-                    let args = res.unwrap().next().await.unwrap();
+                    break res.unwrap();
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            };
+            debug!(target: &log_key, "Connection change stream created for slot: {}", my_name);
+            let log_key_cp = log_key.clone();
+            let connection_change_task = async move {
+                loop {
+                    let args = connection_change_stream.next().await.unwrap();
                     let slot_name = args.args().unwrap().slot_name().to_string();
                     if slot_name == my_name {
                         let signal_name = args.args().unwrap().signal_name().to_string();
@@ -219,9 +198,30 @@ where
                                 "Failed to connect to signal: {} error: {}", signal_name, e);
                             });
                     }
-                } else {
                 }
-            }
+            };
+            let log_key = log_key_cp;
+            let register_task = async move {
+                // This is a hack to make sure the connection change is awaited before the slot is registered
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                debug!(target: &log_key, "Registering slot: {}", full_name);
+                loop {
+                    let res = proxy
+                        .register_slot(
+                            full_name.as_str(),
+                            description.as_str(),
+                            T::type_identifier(),
+                        )
+                        .await;
+                    if res.is_ok() {
+                        break;
+                    } else {
+                        trace!(target: &log_key, "Slot Registration failed: '{}', will try again in 1s", res.err().unwrap());
+                        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                    }
+                }
+            };
+            tokio::join!(connection_change_task, register_task);
         }));
 
         self
