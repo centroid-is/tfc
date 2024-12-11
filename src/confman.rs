@@ -229,8 +229,11 @@ impl<T: Serialize + for<'de> Deserialize<'de> + JsonSchema + Default + Send + Sy
             log!(target: &self.log_key, Level::Error, "{}", err_msg);
             return Err(zbus::fdo::Error::InvalidArgs(err_msg));
         }
-        let mut value = self.storage.value_mut();
-        *value = deserialized.unwrap();
+        {
+            let mut value = self.storage.value_mut();
+            *value = deserialized.unwrap();
+        } // drop write guard before saving to file which will use read guard
+        debug!(target: &self.log_key, "Configuration changed via D-Bus writing to file");
         self.storage.save_to_file().map_err(|e| {
             let err_msg = format!("Failed to save to file: {}", e);
             error!(target: &self.log_key, "{}", err_msg);
