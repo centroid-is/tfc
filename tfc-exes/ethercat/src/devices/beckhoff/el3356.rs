@@ -590,6 +590,19 @@ impl Device for El3356 {
         // }
 
         // debug logging
+
+        let raw_signal = input_pdo.raw_value as f64;
+
+        let signal_raw = self.filter.consume(raw_signal);
+
+        let signal = match &self.mode {
+            ModeImpl::Scale(ref scale) => {
+                let ratio = scale.ratio.load(std::sync::atomic::Ordering::Relaxed);
+                signal_raw / ratio // normalized value of raw value with respect to the given ratio
+            }
+            ModeImpl::Reference(_) => signal_raw,
+        };
+
         // if self.cnt % 1000 == 0 {
         //     let input_pdo = InputPdo::unpack_from_slice(&i).expect("Error unpacking input PDO");
         //     let output_pdo = OutputPdo {
@@ -601,22 +614,12 @@ impl Device for El3356 {
         //             tare: false,
         //         },
         //     };
-        //     warn!(target: &self.log_key, "El3356: {}, i: {input_pdo:?}, o: {o:?}", self.cnt);
+        //     info!(target: &self.log_key, "El3356: {}, i: {input_pdo:?}, o: {o:?}", self.cnt);
+        //     info!(target: &self.log_key, "Signal raw: {}, signal scaled: {}", signal_raw, signal);
         //     output_pdo
         //         .pack_to_slice(&mut o)
         //         .expect("Error packing output PDO");
         // }
-        let raw_signal = input_pdo.raw_value as f64;
-
-        let signal = self.filter.consume(raw_signal);
-
-        let signal = match &self.mode {
-            ModeImpl::Scale(ref scale) => {
-                let ratio = scale.ratio.load(std::sync::atomic::Ordering::Relaxed);
-                signal / ratio // normalized value of raw value with respect to the given ratio
-            }
-            ModeImpl::Reference(_) => signal,
-        };
 
         // let's see whether we should set zero signal read now
         if self
@@ -649,9 +652,10 @@ impl Device for El3356 {
 
         let calibration_signal = self.config.read().calibration_signal_read;
         let zeroed_calibration_signal = calibration_signal - zero;
-        if zeroed_calibration_signal <= 0.0 {
-            return Err("Zeroed calibration signal is <= 0, this should not happen".into());
-        }
+        // Is this needed? Does not seem to be needed for Reference mode
+        // if zeroed_calibration_signal <= 0.0 {
+        //     return Err("Zeroed calibration signal is <= 0, this should not happen".into());
+        // }
         // now we have the mass in full resolution
         let signal_mass = signal * self.config.read().calibration_load / zeroed_calibration_signal;
 
