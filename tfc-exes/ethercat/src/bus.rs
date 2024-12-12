@@ -1,7 +1,7 @@
 #[cfg(feature = "opcua-expose")]
 use crate::opcua::OpcuaServerHandle;
 use ethercrab::{
-    std::{ethercat_now, tx_rx_task},
+    std::{ethercat_now, tx_rx_task, tx_rx_task_io_uring},
     MainDevice, MainDeviceConfig, PduStorage, SubDeviceGroup, Timeouts,
 };
 use log::{debug, error, info, trace, warn};
@@ -12,6 +12,9 @@ use std::time::Instant;
 use std::{sync::Arc, time::Duration};
 use tfc::confman::ConfMan;
 use tfc::time::MicroDuration;
+use thread_priority::{
+    RealtimeThreadSchedulePolicy, ThreadPriority, ThreadPriorityValue, ThreadSchedulePolicy,
+};
 use zbus;
 use zbus::Connection;
 
@@ -57,6 +60,7 @@ pub struct Bus {
     expected_working_counter: u16,
     #[cfg(feature = "opcua-expose")]
     opcua_handle: OpcuaServerHandle,
+    tx_rx_thread: std::thread::JoinHandle<()>,
 }
 
 impl Bus {
@@ -73,15 +77,35 @@ impl Bus {
         ));
 
         let config = ConfMan::<BusConfig>::new(conn.clone(), "bus");
-        tokio::spawn(
-            tx_rx_task(&config.read().interface, tx, rx).expect(
-                format!(
-                    "spawn TX/RX task failed on interface: {}",
-                    config.read().interface
-                )
-                .as_str(),
-            ),
-        );
+        let interface = config.read().interface.clone();
+        let core_ids = core_affinity::get_core_ids().expect("Could not get core ids");
+        let tx_rx_core = core_ids.last().copied().expect("Zero core ids found");
+        let tx_rx_thread = thread_priority::ThreadBuilder::default()
+            .name("tx-rx-thread")
+            // Might need to set `<user> hard rtprio 99` and `<user> soft rtprio 99` in `/etc/security/limits.conf`
+            // Check limits with `ulimit -Hr` or `ulimit -Sr`
+            .priority(ThreadPriority::Crossplatform(
+                ThreadPriorityValue::try_from(49u8).unwrap(),
+            ))
+            // NOTE: Requires a realtime kernel
+            .policy(ThreadSchedulePolicy::Realtime(
+                RealtimeThreadSchedulePolicy::Fifo,
+            ))
+            .spawn(move |_| {
+                core_affinity::set_for_current(tx_rx_core)
+                    .then_some(())
+                    .expect("Set TX/RX thread core");
+
+                #[cfg(target_os = "linux")]
+                // Blocking io_uring
+                tx_rx_task_io_uring(&interface, tx, rx).expect("TX/RX task");
+                #[cfg(not(target_os = "linux"))]
+                let _ = tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(async move { tx_rx_task(&interface, tx, rx) });
+            })
+            .unwrap();
+
         Self {
             main_device,
             config,
@@ -93,6 +117,7 @@ impl Bus {
             expected_working_counter: 0,
             #[cfg(feature = "opcua-expose")]
             opcua_handle,
+            tx_rx_thread,
         }
     }
     pub async fn init(
@@ -253,5 +278,11 @@ impl Bus {
                 e
             });
         }
+    }
+}
+
+impl Drop for Bus {
+    fn drop(&mut self) {
+        // todo kill tx_rx_thread
     }
 }
