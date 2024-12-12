@@ -1,7 +1,9 @@
 #[cfg(feature = "opcua-expose")]
 use crate::opcua::OpcuaServerHandle;
+#[cfg(target_os = "linux")]
+use ethercrab::std::tx_rx_task_io_uring;
 use ethercrab::{
-    std::{ethercat_now, tx_rx_task, tx_rx_task_io_uring},
+    std::{ethercat_now, tx_rx_task},
     MainDevice, MainDeviceConfig, PduStorage, SubDeviceGroup, Timeouts,
 };
 use log::{debug, error, info, trace, warn};
