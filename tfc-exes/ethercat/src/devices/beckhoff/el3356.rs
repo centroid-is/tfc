@@ -271,12 +271,10 @@ impl AtomicF64 {
 }
 
 pub struct Scale {
-    tare_slot: tfc::ipc::Slot<bool>,
     ratio_slot: tfc::ipc::Slot<f64>,
     mass_signal: tfc::ipc::Signal<f64>,
     tare: f64, // signal read tare for fixing zero point, runtime value
     ratio: Arc<AtomicF64>,
-    tare_cmd: Arc<std::sync::atomic::AtomicBool>,
     last_mass: f64,
 }
 impl Scale {
@@ -302,33 +300,13 @@ impl Scale {
             dbus.clone(),
             mass_signal.subscribe(),
         );
-        // tare slot
-        let mut tare_slot = tfc::ipc::Slot::new(
-            dbus.clone(),
-            tfc::ipc::Base::new(
-                format!("{prefix}/tare").as_str(),
-                Some("Offset current weight on cell as tare, meaning it will zero out the current weight"),
-            ),
-        );
-        tfc::ipc::dbus::SlotInterface::register(
-            tare_slot.base(),
-            dbus.clone(),
-            tare_slot.channel("dbus"),
-        );
-        let tare = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let tare_cp = tare.clone();
-        tare_slot.recv(Box::new(move |new_tare| {
-            tare_cp.store(*new_tare, std::sync::atomic::Ordering::Relaxed);
-        }));
 
         Self {
-            tare_slot,
             ratio_slot,
             mass_signal,
             tare: 0.0,
             ratio,
             last_mass: 0.0,
-            tare_cmd: tare,
         }
     }
 }
@@ -403,8 +381,10 @@ pub struct El3356 {
     filter: my_avg::AvgFilter,
     calibrate_cmd: Arc<std::sync::atomic::AtomicBool>,
     zero_calibrate_cmd: Arc<std::sync::atomic::AtomicBool>,
+    tare_cmd: Arc<std::sync::atomic::AtomicBool>,
     calibrate_slot: tfc::ipc::Slot<bool>,
     zero_calibrate_slot: tfc::ipc::Slot<bool>,
+    tare_slot: tfc::ipc::Slot<bool>,
 }
 
 impl El3356 {
@@ -458,6 +438,24 @@ impl El3356 {
         zero_calibrate_slot.recv(Box::new(move |new_zero_calibrate| {
             zero_calibrate_cmd_cp.store(*new_zero_calibrate, std::sync::atomic::Ordering::Relaxed);
         }));
+        // tare slot
+        let mut tare_slot = tfc::ipc::Slot::new(
+                    dbus.clone(),
+                    tfc::ipc::Base::new(
+                        format!("{prefix}/tare").as_str(),
+                        Some("Offset current weight on cell as tare, meaning it will zero out the current weight"),
+                    ),
+                );
+        tfc::ipc::dbus::SlotInterface::register(
+            tare_slot.base(),
+            dbus.clone(),
+            tare_slot.channel("dbus"),
+        );
+        let tare_cmd = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let tare_cmd_cp = tare_cmd.clone();
+        tare_slot.recv(Box::new(move |new_tare| {
+            tare_cmd_cp.store(*new_tare, std::sync::atomic::Ordering::Relaxed);
+        }));
 
         Self {
             cnt: 0,
@@ -467,8 +465,10 @@ impl El3356 {
             filter,
             calibrate_cmd,
             zero_calibrate_cmd,
+            tare_cmd,
             calibrate_slot,
             zero_calibrate_slot,
+            tare_slot,
         }
     }
     /// Zero calibration
@@ -582,6 +582,15 @@ impl Device for El3356 {
         let (i, mut o) = device.io_raw_mut();
 
         let input_pdo = InputPdo::unpack_from_slice(&i)?;
+        let mut output_pdo = OutputPdo {
+            control_word: ControlWord {
+                start_calibration: false,
+                disable_calibration: true,
+                input_freeze: false,
+                sample_mode: false,
+                tare: false,
+            },
+        };
 
         // tx_pdo does not change when the value from the sensor is the same for some period of time
         // the average filter needs to include all this period so let's not return early here
@@ -659,15 +668,20 @@ impl Device for El3356 {
         // now we have the mass in full resolution
         let signal_mass = signal * self.config.read().calibration_load / zeroed_calibration_signal;
 
+        if self.tare_cmd.load(std::sync::atomic::Ordering::Relaxed) {
+            // Calibrate the internals of the device during tare
+            // We should be getting a break during wheiging when taring
+            output_pdo.control_word.start_calibration = true;
+        }
+
         match &mut self.mode {
             ModeImpl::Scale(ref mut scale) => {
                 // let's see whether we should set tare signal read now
                 // BIG TODO: we need to make sure that the tare offset is not too large, have configurable limits
-                if scale.tare_cmd.load(std::sync::atomic::Ordering::Relaxed) {
+                if self.tare_cmd.load(std::sync::atomic::Ordering::Relaxed) {
                     scale.tare += signal;
                     info!(target: &self.log_key, "Tare offset set to {}", scale.tare);
-                    scale
-                        .tare_cmd
+                    self.tare_cmd
                         .store(false, std::sync::atomic::Ordering::Relaxed);
                 }
 
@@ -744,19 +758,19 @@ impl Device for El3356 {
             namespace,
         )
         .register();
+        tfc::ipc::opcua::SlotInterface::new(
+            self.tare_slot.base(),
+            self.tare_slot.channel("opcua"),
+            manager.clone(),
+            subscriptions.clone(),
+            namespace,
+        )
+        .register();
         match &mut self.mode {
             ModeImpl::Scale(ref mut scale) => {
                 tfc::ipc::opcua::SignalInterface::new(
                     scale.mass_signal.base(),
                     scale.mass_signal.subscribe(),
-                    manager.clone(),
-                    subscriptions.clone(),
-                    namespace,
-                )
-                .register();
-                tfc::ipc::opcua::SlotInterface::new(
-                    scale.tare_slot.base(),
-                    scale.tare_slot.channel("opcua"),
                     manager.clone(),
                     subscriptions.clone(),
                     namespace,
