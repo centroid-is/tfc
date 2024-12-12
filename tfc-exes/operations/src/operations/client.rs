@@ -1,5 +1,5 @@
 use futures::stream::StreamExt;
-use log::{info, trace};
+use log::{debug, info, trace, warn};
 use std::cell::RefCell;
 use std::sync::Arc;
 use tokio::sync::{watch, Notify};
@@ -75,10 +75,13 @@ impl OperationsClient {
                             continue;
                         }
                         trace!(target: &log_key_cp, "Proxying update: new_mode={:?}, old_mode={:?}", new_mode, old_mode);
-                        update_sender_cp.send(OperationsUpdate {
+                        let res = update_sender_cp.send(OperationsUpdate {
                             new_mode,
                             old_mode,
-                        }).expect("Failed to send update");
+                        });
+                        if res.is_err() {
+                            debug!(target: &log_key_cp, "TODO this log is showing up a lot even though it receives updates below: new_mode={:?}, old_mode={:?}, error={:?}, receiver_count={:?}", new_mode, old_mode, res.err(), update_sender_cp.receiver_count());
+                        }
                     }
                 }
             }
@@ -115,9 +118,15 @@ impl OperationsClient {
         let notify_cp = notify.clone();
         let log_key = self.log_key.clone();
         self.handles.borrow_mut().push(tokio::spawn(async move {
-            trace!(target: &log_key, "Subscribed to entry of {:?}", operation_mode);
-            while let Ok(_) = update_receiver.changed().await {
+            debug!(target: &log_key, "Subscribed to entry of {:?}", operation_mode);
+            loop {
+                let res = update_receiver.changed().await;
+                if res.is_err() {
+                    warn!(target: &log_key, "Error subscribing to entry of {:?}: {:?}", operation_mode, res.err());
+                    break;
+                }
                 let update = update_receiver.borrow_and_update();
+                debug!(target: &log_key, "Entry mode, Received update: new_mode={:?}, old_mode={:?}", update.new_mode, update.old_mode);
                 if update.new_mode == operation_mode {
                     notify.notify_waiters();
                 }
@@ -132,9 +141,15 @@ impl OperationsClient {
         let notify_cp = notify.clone();
         let log_key = self.log_key.clone();
         self.handles.borrow_mut().push(tokio::spawn(async move {
-            trace!(target: &log_key, "Subscribed to exit of {:?}", operation_mode);
-            while let Ok(_) = update_receiver.changed().await {
+            debug!(target: &log_key, "Subscribed to exit of {:?}", operation_mode);
+            loop {
+                let res = update_receiver.changed().await;
+                if res.is_err() {
+                    warn!(target: &log_key, "Error subscribing to exit of {:?}: {:?}", operation_mode, res.err());
+                    break;
+                }
                 let update = update_receiver.borrow_and_update();
+                debug!(target: &log_key, "Exit mode, Received update: new_mode={:?}, old_mode={:?}", update.new_mode, update.old_mode);
                 if update.old_mode == operation_mode {
                     notify.notify_waiters();
                 }
