@@ -200,13 +200,20 @@ impl Bus {
         let mut device_errors: [Option<Box<dyn Error + Send + Sync>>; MAX_SUBDEVICES] =
             std::array::from_fn(|_| None);
 
-        let expected_working_counter_failures = 5;
+        let expected_working_counter_failures = 100; // Does this make sense, 100 ms, I think it is okay
         let mut expected_working_counter_failures_cnt = 0;
         loop {
             tick_interval.tick().await;
 
             let tx_rx_instant = Instant::now();
-            let wc = group.tx_rx(&self.main_device).await?;
+            let wc = match group.tx_rx(&self.main_device).await {
+                Ok(wc) => wc,
+                Err(e) => {
+                    warn!(target: &self.log_key, "Failed to tx/rx: {}", e);
+                    expected_working_counter_failures_cnt += 1;
+                    continue;
+                }
+            };
             tx_rx_duration += tx_rx_instant.elapsed();
 
             if wc != self.expected_working_counter {
