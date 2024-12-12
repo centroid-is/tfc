@@ -174,20 +174,30 @@ impl Bus {
         let mut process_data_duration = Duration::ZERO;
         let mut device_errors: [Option<Box<dyn Error + Send + Sync>>; MAX_SUBDEVICES] =
             std::array::from_fn(|_| None);
+
+        let expected_working_counter_failures = 5;
+        let mut expected_working_counter_failures_cnt = 0;
         loop {
+            tick_interval.tick().await;
+
             let tx_rx_instant = Instant::now();
             let wc = group.tx_rx(&self.main_device).await?;
             tx_rx_duration += tx_rx_instant.elapsed();
 
             if wc != self.expected_working_counter {
-                // TODO we need to recover less tremeendously than this
-                // https://github.com/ethercrab-rs/ethercrab/discussions/253
-                return Err(format!(
-                    "Working counter mismatch, expected: {}, got: {}",
-                    self.expected_working_counter, wc
-                )
-                .into());
+                expected_working_counter_failures_cnt += 1;
+                if expected_working_counter_failures_cnt >= expected_working_counter_failures {
+                    // TODO we need to recover less tremeendously than this
+                    // https://github.com/ethercrab-rs/ethercrab/discussions/253
+                    return Err(format!(
+                        "Working counter mismatch, expected: {}, got: {}",
+                        self.expected_working_counter, wc
+                    )
+                    .into());
+                }
+                continue;
             }
+            expected_working_counter_failures_cnt = 0;
 
             let process_data_instant = Instant::now();
             for (device_index, mut subdevice) in group.iter(&self.main_device).enumerate() {
@@ -207,7 +217,6 @@ impl Bus {
             }
             process_data_duration += process_data_instant.elapsed();
 
-            tick_interval.tick().await;
             cnt += 1;
             if cnt % 1000 == 0 {
                 info!(target: &self.log_key, "Ethercat tick interval: {:?}", instant.elapsed()/1000);
