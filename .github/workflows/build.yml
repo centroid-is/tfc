@@ -1,4 +1,4 @@
-name: Rust
+name: Build
 
 on:
   push:
@@ -11,14 +11,26 @@ env:
 
 jobs:
   build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        workdir: ['.', 'tfc-exes']
 
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
 
     steps:
     - name: Install dependencies
-      run: sudo apt-get install -y mold lld clang
+      if: runner.os == 'Linux'
+      run: sudo apt-get install -y mold lld clang graphviz
+    - name: Install dependencies
+      if: runner.os == 'Windows'
+      run: choco install -y graphviz
+    - name: Install dependencies
+      if: runner.os == 'macos'
+      run: brew install graphviz
     - uses: actions/checkout@v4
     - name: Copy dbus-tfc.conf
+      if: runner.os == 'Linux'
       run: |
         sudo cp dbus-tfc.conf /etc/dbus-1/system.d/
         # todo why is those needed?
@@ -26,9 +38,12 @@ jobs:
         sudo sed -i 's|deny send_type="method_call"|allow send_type="method_call"|g' /usr/share/dbus-1/system.conf
         sudo /usr/bin/busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig
     - name: Build
+      working-directory: ${{ matrix.workdir }}
       run: cargo build --verbose
     - name: Run tests
+      if: runner.os == 'Linux'
       env:
         RUNTIME_DIRECTORY: /tmp/
         CONFIGURATION_DIRECTORY: /tmp/
+      working-directory: ${{ matrix.workdir }}
       run: cargo test --verbose
