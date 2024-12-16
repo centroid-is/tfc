@@ -24,18 +24,17 @@ jobs:
       run: sudo apt-get install -y mold lld clang graphviz
     - name: Install dependencies
       if: runner.os == 'Windows'
-      run: choco install -y graphviz nmap
+      run: choco install -y graphviz npcap
     - name: Install dependencies
       if: runner.os == 'macos'
       run: brew install graphviz
-    # - name: Install Npcap SDK
-    #   if: runner.os == 'Windows'
-    #   shell: pwsh
-    #   run: |
-    #     Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.80.zip" -OutFile "npcap-sdk.zip"
-    #     Expand-Archive -Path "npcap-sdk.zip" -DestinationPath "npcap-sdk"
-    #     $env:LIB = "$pwd\\npcap-sdk\\Lib;$env:LIB"
-    #     $env:INCLUDE = "$pwd\\npcap-sdk\\Include;$env:INCLUDE"
+    - name: Install Npcap SDK
+      if: runner.os == 'Windows'
+      run: |
+        Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.80.zip" -OutFile "npcap-sdk.zip"
+        Expand-Archive -Path "npcap-sdk.zip" -DestinationPath "npcap-sdk"
+        $env:LIB = "$pwd\\npcap-sdk\\Lib;$env:LIB"
+        $env:INCLUDE = "$pwd\\npcap-sdk\\Include;$env:INCLUDE"
     - uses: actions/checkout@v4
     - name: Copy dbus-tfc.conf
       if: runner.os == 'Linux'
@@ -51,8 +50,10 @@ jobs:
       run: cargo build --verbose
     - name: Build windows
       if: runner.os == 'Windows'
+      env:
+        LIB: ${{ github.workspace }}\\npcap-sdk\\Lib;${{ env.LIB }}
+        INCLUDE: ${{ github.workspace }}\\npcap-sdk\\Include;${{ env.INCLUDE }}
       working-directory: ${{ matrix.workdir }}
-      # shell: pwsh
       run: cargo build --verbose
     - name: Run tests
       if: runner.os == 'Linux'
