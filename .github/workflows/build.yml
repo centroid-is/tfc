@@ -31,7 +31,7 @@ jobs:
     - name: Install Npcap SDK
       if: runner.os == 'Windows'
       run: |
-        Invoke-WebRequest -Uri "https://nmap.org/npcap/dist/npcap-sdk-1.80.zip" -OutFile "npcap-sdk.zip"
+        Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.80.zip" -OutFile "npcap-sdk.zip"
         Expand-Archive -Path "npcap-sdk.zip" -DestinationPath "npcap-sdk"
         setx LIB "%CD%\npcap-sdk\Lib;%LIB%"
         setx INCLUDE "%CD%\npcap-sdk\Include;%INCLUDE%"
