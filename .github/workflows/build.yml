@@ -24,7 +24,7 @@ jobs:
       run: sudo apt-get install -y mold lld clang graphviz
     - name: Install dependencies
       if: runner.os == 'Windows'
-      run: choco install -y graphviz npcap
+      run: choco install -y graphviz
     - name: Install dependencies
       if: runner.os == 'macos'
       run: brew install graphviz
