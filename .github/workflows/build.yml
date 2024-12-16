@@ -69,12 +69,7 @@ jobs:
     - name: Build windows
       if: runner.os == 'Windows'
       working-directory: ${{ matrix.workdir }}
-      run: | 
-        Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.80.zip" -OutFile "npcap-sdk.zip"
-        Expand-Archive -Path "npcap-sdk.zip" -DestinationPath "npcap-sdk"
-        setx LIB "%CD%\npcap-sdk\Lib;%LIB%"
-        setx INCLUDE "%CD%\npcap-sdk\Include;%INCLUDE%"
-        ls $env:LIB 
+      run: |
         cargo build --verbose
     - name: Run tests
       if: runner.os == 'Linux'
