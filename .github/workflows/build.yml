@@ -30,11 +30,12 @@ jobs:
       run: brew install graphviz
     - name: Install Npcap SDK
       if: runner.os == 'Windows'
+      shell: pwsh
       run: |
         Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.80.zip" -OutFile "npcap-sdk.zip"
         Expand-Archive -Path "npcap-sdk.zip" -DestinationPath "npcap-sdk"
-        setx LIB "%CD%\npcap-sdk\Lib;%LIB%"
-        setx INCLUDE "%CD%\npcap-sdk\Include;%INCLUDE%"
+        $env:LIB = "$pwd\\npcap-sdk\\Lib;$env:LIB"
+        $env:INCLUDE = "$pwd\\npcap-sdk\\Include;$env:INCLUDE"
     - uses: actions/checkout@v4
     - name: Copy dbus-tfc.conf
       if: runner.os == 'Linux'
@@ -45,7 +46,13 @@ jobs:
         sudo sed -i 's|deny send_type="method_call"|allow send_type="method_call"|g' /usr/share/dbus-1/system.conf
         sudo /usr/bin/busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig
     - name: Build
+      if: runner.os != 'Windows'
       working-directory: ${{ matrix.workdir }}
+      run: cargo build --verbose
+    - name: Build windows
+      if: runner.os == 'Windows'
+      working-directory: ${{ matrix.workdir }}
+      shell: pwsh
       run: cargo build --verbose
     - name: Run tests
       if: runner.os == 'Linux'
