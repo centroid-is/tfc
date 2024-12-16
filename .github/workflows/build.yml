@@ -41,6 +41,31 @@ jobs:
       if: runner.os != 'Windows'
       working-directory: ${{ matrix.workdir }}
       run: cargo build --verbose
+    - name: Install Npcap SDK on Windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $npcap_sdk_version = "1.13" # or the current version
+        $npcap_sdk_url = "https://nmap.org/npcap/dist/npcap-sdk-$npcap_sdk_version.zip"
+        $npcap_sdk_zip = "npcap-sdk.zip"
+        $npcap_sdk_dir = "npcap-sdk"
+    
+        Invoke-WebRequest -Uri $npcap_sdk_url -OutFile $npcap_sdk_zip
+        Expand-Archive -Path $npcap_sdk_zip -DestinationPath $npcap_sdk_dir -Force
+
+        $env:LIB = "$PWD\$npcap_sdk_dir\Lib;$env:LIB"
+        $env:INCLUDE = "$PWD\$npcap_sdk_dir\Include;$env:INCLUDE"
+
+        echo "LIB=$env:LIB" >> $env:GITHUB_ENV
+        echo "INCLUDE=$env:INCLUDE" >> $env:GITHUB_ENV
+    - name: Verify wpcap.lib
+      if: runner.os == 'Windows'
+      run: |
+        if (Test-Path "$PWD\npcap-sdk\Lib\wpcap.lib") {
+          Write-Output "wpcap.lib found."
+        } else {
+          Write-Error "wpcap.lib not found."
+        }
     - name: Build windows
       if: runner.os == 'Windows'
       working-directory: ${{ matrix.workdir }}
