@@ -28,13 +28,6 @@ jobs:
     - name: Install dependencies
       if: runner.os == 'macos'
       run: brew install graphviz
-    - name: Install Npcap SDK
-      if: runner.os == 'Windows'
-      run: |
-        Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.80.zip" -OutFile "npcap-sdk.zip"
-        Expand-Archive -Path "npcap-sdk.zip" -DestinationPath "npcap-sdk"
-        $env:LIB = "$pwd\\npcap-sdk\\Lib;$env:LIB"
-        $env:INCLUDE = "$pwd\\npcap-sdk\\Include;$env:INCLUDE"
     - uses: actions/checkout@v4
     - name: Copy dbus-tfc.conf
       if: runner.os == 'Linux'
@@ -50,11 +43,14 @@ jobs:
       run: cargo build --verbose
     - name: Build windows
       if: runner.os == 'Windows'
-      env:
-        LIB: ${{ github.workspace }}\\npcap-sdk\\Lib;${{ env.LIB }}
-        INCLUDE: ${{ github.workspace }}\\npcap-sdk\\Include;${{ env.INCLUDE }}
       working-directory: ${{ matrix.workdir }}
-      run: cargo build --verbose
+      run: | 
+        Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.80.zip" -OutFile "npcap-sdk.zip"
+        Expand-Archive -Path "npcap-sdk.zip" -DestinationPath "npcap-sdk"
+        setx LIB "%CD%\npcap-sdk\Lib;%LIB%"
+        setx INCLUDE "%CD%\npcap-sdk\Include;%INCLUDE%"
+        ls $env:LIB 
+        cargo build --verbose
     - name: Run tests
       if: runner.os == 'Linux'
       env:
