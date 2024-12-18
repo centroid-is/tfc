@@ -171,7 +171,7 @@ where
         let log_key = self.base.log_key.clone();
         self.connection_change_task = Some(tokio::spawn(async move {
             let proxy = IpcRulerProxy::builder(&bus)
-                .cache_properties(zbus::CacheProperties::No)
+                .cache_properties(zbus::proxy::CacheProperties::No)
                 .build()
                 .await
                 .unwrap();
@@ -489,7 +489,7 @@ where
         let log_key = self.base.log_key.clone();
         self.register_task = Some(tokio::spawn(async move {
             let proxy = IpcRulerProxy::builder(&bus)
-                .cache_properties(zbus::CacheProperties::No)
+                .cache_properties(zbus::proxy::CacheProperties::No)
                 .build()
                 .await
                 .unwrap();
