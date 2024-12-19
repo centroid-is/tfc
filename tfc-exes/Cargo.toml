@@ -1,9 +1,5 @@
 [workspace]
-members = [
-    "ethercat",
-    "operations",
-    "signal_source",
-]
+members = ["ethercat", "operations", "signal_source", "ipc-ruler"]
 
 [workspace.dependencies]
 log = "0.4.22"
@@ -11,7 +7,11 @@ schemars = "0.8.21"
 serde = "1.0.210"
 smlang = { version = "0.8.0", features = ["graphviz"] }
 tfc = { path = "../" }
-tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "tracing"] }
+tokio = { version = "1.41", features = [
+    "rt-multi-thread",
+    "macros",
+    "tracing",
+] }
 zbus = "4.4.0"
 futures = "0.3.31"
 futures-channel = "0.3.31"
