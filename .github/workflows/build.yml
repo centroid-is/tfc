@@ -1,0 +1,82 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, 
+              # windows-latest, 
+              macos-latest]
+        workdir: ['.', 'tfc-exes']
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - name: Install dependencies
+      if: runner.os == 'Linux'
+      run: sudo apt-get install -y mold lld clang graphviz
+    - name: Install dependencies
+      if: runner.os == 'Windows'
+      run: choco install -y graphviz
+    - name: Install dependencies
+      if: runner.os == 'macos'
+      run: brew install graphviz
+    - uses: actions/checkout@v4
+    - name: Copy dbus-tfc.conf
+      if: runner.os == 'Linux'
+      run: |
+        sudo cp dbus-tfc.conf /etc/dbus-1/system.d/
+        # todo why is those needed?
+        sudo sed -i 's|deny own=|allow own=|g' /usr/share/dbus-1/system.conf
+        sudo sed -i 's|deny send_type="method_call"|allow send_type="method_call"|g' /usr/share/dbus-1/system.conf
+        sudo /usr/bin/busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig
+    - name: Build
+      if: runner.os != 'Windows'
+      working-directory: ${{ matrix.workdir }}
+      run: cargo build --verbose
+    - name: Install Npcap SDK on Windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $npcap_sdk_version = "1.13" # or the current version
+        $npcap_sdk_url = "https://nmap.org/npcap/dist/npcap-sdk-$npcap_sdk_version.zip"
+        $npcap_sdk_zip = "npcap-sdk.zip"
+        $npcap_sdk_dir = "npcap-sdk"
+    
+        Invoke-WebRequest -Uri $npcap_sdk_url -OutFile $npcap_sdk_zip
+        Expand-Archive -Path $npcap_sdk_zip -DestinationPath $npcap_sdk_dir -Force
+
+        $env:LIB = "$PWD\$npcap_sdk_dir\Lib;$env:LIB"
+        $env:INCLUDE = "$PWD\$npcap_sdk_dir\Include;$env:INCLUDE"
+
+        echo "LIB=$env:LIB" >> $env:GITHUB_ENV
+        echo "INCLUDE=$env:INCLUDE" >> $env:GITHUB_ENV
+    - name: Verify wpcap.lib
+      if: runner.os == 'Windows'
+      run: |
+        if (Test-Path "$PWD\npcap-sdk\Lib\wpcap.lib") {
+          Write-Output "wpcap.lib found."
+        } else {
+          Write-Error "wpcap.lib not found."
+        }
+    - name: Build windows
+      if: runner.os == 'Windows'
+      working-directory: ${{ matrix.workdir }}
+      run: |
+        cargo build --verbose
+    - name: Run tests
+      if: runner.os == 'Linux'
+      env:
+        RUNTIME_DIRECTORY: /tmp/
+        CONFIGURATION_DIRECTORY: /tmp/
+      working-directory: ${{ matrix.workdir }}
+      run: cargo test --verbose

@@ -14,9 +14,9 @@ use std::time::Instant;
 use std::{sync::Arc, time::Duration};
 use tfc::confman::ConfMan;
 use tfc::time::MicroDuration;
-use thread_priority::{
-    RealtimeThreadSchedulePolicy, ThreadPriority, ThreadPriorityValue, ThreadSchedulePolicy,
-};
+#[cfg(target_os = "linux")]
+use thread_priority::{RealtimeThreadSchedulePolicy, ThreadSchedulePolicy};
+use thread_priority::{ThreadPriority, ThreadPriorityValue};
 use zbus;
 use zbus::Connection;
 
@@ -88,11 +88,14 @@ impl Bus {
             // Check limits with `ulimit -Hr` or `ulimit -Sr`
             .priority(ThreadPriority::Crossplatform(
                 ThreadPriorityValue::try_from(49u8).unwrap(),
-            ))
+            ));
+        #[cfg(target_os = "linux")]
+        let tx_rx_thread = tx_rx_thread
             // NOTE: Requires a realtime kernel
             .policy(ThreadSchedulePolicy::Realtime(
                 RealtimeThreadSchedulePolicy::Fifo,
-            ))
+            ));
+        let tx_rx_thread = tx_rx_thread
             .spawn(move |_| {
                 core_affinity::set_for_current(tx_rx_core)
                     .then_some(())
