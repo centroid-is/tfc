@@ -15,6 +15,11 @@ use crate::operations::server::OperationsImpl;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    std::panic::set_hook(Box::new(|panic_info| {
+        log::error!("Critical error: {:#?}", panic_info);
+        std::process::abort();
+    }));
+
     progbase::init();
     logger::init_combined_logger()?;
     let formatted_name = format!(
