@@ -24,6 +24,9 @@ futures-channel = { workspace = true }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde_json = "1.0.133"
 
+[dev-dependencies]
+serial_test = "3.2.0"
+
 [[bin]]
 name = "ipc-ruler"
 path = "src/main.rs"

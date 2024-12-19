@@ -36,7 +36,10 @@ pub struct IpcRuler {
 }
 
 impl IpcRuler {
-    pub fn spawn(dbus: zbus::Connection) -> (Arc<Mutex<Self>>, tokio::task::JoinHandle<()>) {
+    pub fn spawn(
+        dbus: zbus::Connection,
+        in_memory: bool,
+    ) -> (Arc<Mutex<Self>>, tokio::task::JoinHandle<()>) {
         let (connections_tx, mut connections_rx) = tokio::sync::mpsc::channel(10);
         let (signals_tx, mut signals_rx) = tokio::sync::mpsc::channel(10);
         let (slots_tx, mut slots_rx) = tokio::sync::mpsc::channel(10);
@@ -46,7 +49,7 @@ impl IpcRuler {
         let (connection_change_tx, mut connection_change_rx) =
             tokio::sync::mpsc::channel::<ConnectionChange>(10);
 
-        let this = Arc::new(Mutex::new(Self::new(connection_change_tx, false)));
+        let this = Arc::new(Mutex::new(Self::new(connection_change_tx, in_memory)));
         let this_clone = this.clone();
 
         let dbus_task = async move {
@@ -244,7 +247,7 @@ impl IpcRuler {
             })
             .unwrap_or(false);
         if found {
-            // update the signal
+            // update the slot
             self.db.execute(
                 "UPDATE slots SET last_registered = ?, description = ?, type = ?, created_by = ? WHERE name = ?;",
                 rusqlite::params![
@@ -256,7 +259,17 @@ impl IpcRuler {
                 ],
             )?;
         } else {
-            // Insert the signal
+            // Insert the slot
+            //   name TEXT,
+            //   type INT,
+            //   created_by TEXT,
+            //   created_at LONG INTEGER,
+            //   last_registered LONG INTEGER,
+            //   last_modified INTEGER,
+            //   modified_by TEXT,
+            //   connected_to TEXT,
+            //   time_point_t LONG INTEGER,
+            //   description TEXT
             self.db.execute(
                 "INSERT INTO slots (name, type, created_by, created_at, last_registered, last_modified, description) VALUES (?, ?, ?, ?, ?, ?, ?);",
                 rusqlite::params![
@@ -381,8 +394,8 @@ impl IpcRuler {
                     created_at: row.get(4)?,
                     created_by: row.get(5)?,
                     last_modified: row.get(6)?,
-                    modified_by: row.get(7)?,
-                    connected_to: row.get(8)?,
+                    modified_by: row.get(7).unwrap_or("".to_string()),
+                    connected_to: row.get(8).unwrap_or("".to_string()),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -626,4 +639,88 @@ impl IpcRulerDbusService {
         slot_name: &str,
         signal_name: &str,
     ) -> zbus::Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use log::trace;
+    use tfc::ipc_ruler_client::IpcRulerProxy;
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_register_signal() -> Result<(), Box<dyn std::error::Error>> {
+        tfc::logger::init_test_logger(log::LevelFilter::Trace)?;
+        trace!("create bus");
+        let bus = zbus::connection::Builder::system()?
+            .name(DBUS_SERVICE)?
+            .build()
+            .await?;
+        trace!("spawn ruler");
+        let (_, handle) = IpcRuler::spawn(bus.clone(), true);
+        trace!("create proxy");
+        let proxy = IpcRulerProxy::builder(&bus)
+            .cache_properties(zbus::CacheProperties::No)
+            .build()
+            .await
+            .unwrap();
+        trace!("register signal");
+        let mut i = 0;
+        while i < 10 {
+            let res = tokio::time::timeout(
+                tokio::time::Duration::from_millis(1),
+                proxy.register_signal("test_signal", "test_description", 1),
+            )
+            .await;
+            if res.is_ok() {
+                break;
+            }
+            trace!("res: {:?}", res);
+            i += 1;
+        }
+        let signals = proxy.signals().await?;
+
+        assert!(signals.contains("test_signal"));
+        trace!("signals: {:?}", signals);
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_register_slot() -> Result<(), Box<dyn std::error::Error>> {
+        tfc::logger::init_test_logger(log::LevelFilter::Trace)?;
+        trace!("create bus");
+        let bus = zbus::connection::Builder::system()?
+            .name(DBUS_SERVICE)?
+            .build()
+            .await?;
+        trace!("spawn ruler");
+        let (_, handle) = IpcRuler::spawn(bus.clone(), true);
+        trace!("create proxy");
+        let proxy = IpcRulerProxy::builder(&bus)
+            .cache_properties(zbus::CacheProperties::No)
+            .build()
+            .await
+            .unwrap();
+        trace!("register slot");
+        let mut i = 0;
+        while i < 10 {
+            let res = tokio::time::timeout(
+                tokio::time::Duration::from_millis(1),
+                proxy.register_slot("test_slot", "test_description", 1),
+            )
+            .await;
+            if res.is_ok() {
+                break;
+            }
+            i += 1;
+        }
+        let slots = proxy.slots().await?;
+        assert!(slots.contains("test_slot"));
+        trace!("slots: {:?}", slots);
+        handle.abort();
+        Ok(())
+    }
 }

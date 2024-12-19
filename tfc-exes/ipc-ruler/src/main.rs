@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
 
-    let _ = IpcRuler::spawn(bus.clone());
+    let _ = IpcRuler::spawn(bus.clone(), false);
 
     std::future::pending::<()>().await;
     Ok(())
