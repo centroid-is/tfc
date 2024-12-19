@@ -1,7 +1,8 @@
 use log::debug;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tfc::progbase;
-use tokio::sync::watch;
+use tokio::sync::Mutex;
 use zbus::interface;
 
 pub static DBUS_PATH: &str = "/is/centroid/ipc_ruler";
@@ -26,26 +27,29 @@ const SLOTS_CREATE: &str = "CREATE TABLE IF NOT EXISTS slots(
               modified_by TEXT,
               connected_to TEXT,
               time_point_t LONG INTEGER,
-              description TEXT);
-            )";
+              description TEXT
+            );";
 
-struct IpcRuler {
+pub struct IpcRuler {
     db: rusqlite::Connection,
     connection_change_tx: tokio::sync::mpsc::Sender<ConnectionChange>,
 }
 
 impl IpcRuler {
-    pub fn spawn(dbus: zbus::Connection) -> Self {
-        let (connections_tx, connections_rx) = tokio::sync::mpsc::channel(10);
-        let (signals_tx, signals_rx) = tokio::sync::mpsc::channel(10);
-        let (slots_tx, slots_rx) = tokio::sync::mpsc::channel(10);
-        let (connect_sender, connect_rx) = tokio::sync::mpsc::channel(10);
-        let (register_signal_sender, register_signal_rx) = tokio::sync::mpsc::channel(10);
-        let (register_slot_sender, register_slot_rx) = tokio::sync::mpsc::channel(10);
+    pub fn spawn(dbus: zbus::Connection) -> (Arc<Mutex<Self>>, tokio::task::JoinHandle<()>) {
+        let (connections_tx, mut connections_rx) = tokio::sync::mpsc::channel(10);
+        let (signals_tx, mut signals_rx) = tokio::sync::mpsc::channel(10);
+        let (slots_tx, mut slots_rx) = tokio::sync::mpsc::channel(10);
+        let (connect_sender, mut connect_rx) = tokio::sync::mpsc::channel(10);
+        let (register_signal_sender, mut register_signal_rx) = tokio::sync::mpsc::channel(10);
+        let (register_slot_sender, mut register_slot_rx) = tokio::sync::mpsc::channel(10);
         let (connection_change_tx, mut connection_change_rx) =
             tokio::sync::mpsc::channel::<ConnectionChange>(10);
 
-        let dbus_task = async {
+        let this = Arc::new(Mutex::new(Self::new(connection_change_tx, false)));
+        let this_clone = this.clone();
+
+        let dbus_task = async move {
             let client = IpcRulerDbusService::new(
                 connections_tx,
                 signals_tx,
@@ -71,23 +75,88 @@ impl IpcRuler {
                     }
                 }
             };
-            // todo
-            // loop
-            // tokio select
-            while let Some(change) = connection_change_rx.recv().await {
-                let _ = IpcRulerDbusService::connection_change(
-                    &iface.signal_context(),
-                    &change.slot_name,
-                    &change.signal_name,
-                )
-                .await;
+            loop {
+                tokio::select! {
+                    change = connection_change_rx.recv() => {
+                        match change {
+                            Some(change) => {
+                                let _ = IpcRulerDbusService::connection_change(
+                                    &iface.signal_context(),
+                                    &change.slot_name,
+                                    &change.signal_name,
+                                ).await.map_err(|e| log::error!("Failed to send connection change: {:?}", e));
+                            }
+                            _ => {
+                                panic!("Connection change channel closed");
+                            }
+                        }
+                    }
+                    connections_response_tx = connections_rx.recv() => {
+                        match connections_response_tx {
+                            Some(response_tx) => {
+                                let _ = response_tx.send(this_clone.lock().await.connections().await).map_err(|e| log::error!("Failed to send connections response: {:?}", e));
+                            }
+                            _ => {
+                                panic!("Connections response channel closed");
+                            }
+                        }
+                    }
+                    signals_response_tx = signals_rx.recv() => {
+                        match signals_response_tx {
+                            Some(response_tx) => {
+                                let _ = response_tx.send(this_clone.lock().await.signals().await).map_err(|e| log::error!("Failed to send signals response: {:?}", e));
+                            }
+                            _ => {
+                                panic!("Signals response channel closed");
+                            }
+                        }
+                    }
+                    slots_response_tx = slots_rx.recv() => {
+                        match slots_response_tx {
+                            Some(response_tx) => {
+                                let _ = response_tx.send(this_clone.lock().await.slots().await).map_err(|e| log::error!("Failed to send slots response: {:?}", e));
+                            }
+                            _ => {
+                                panic!("Slots response channel closed");
+                            }
+                        }
+                    }
+                    connect_response_tx = connect_rx.recv() => {
+                        match connect_response_tx {
+                            Some((change, response_tx)) => {
+                                let _ = response_tx.send(this_clone.lock().await.connect(change).await).map_err(|e| log::error!("Failed to send connect response: {:?}", e));
+                            }
+                            _ => {
+                                panic!("Connect response channel closed");
+                            }
+                        }
+                    }
+                    register_signal_response_tx = register_signal_rx.recv() => {
+                        match register_signal_response_tx {
+                            Some((signal, response_tx)) => {
+                                let _ = response_tx.send(this_clone.lock().await.register_signal(signal).await).map_err(|e| log::error!("Failed to send register signal response: {:?}", e));
+                            }
+                            _ => {
+                                panic!("Register signal response channel closed");
+                            }
+                        }
+                    }
+                    register_slot_response_tx = register_slot_rx.recv() => {
+                        match register_slot_response_tx {
+                            Some((slot, response_tx)) => {
+                                let _ = response_tx.send(this_clone.lock().await.register_slot(slot).await).map_err(|e| log::error!("Failed to send register slot response: {:?}", e));
+                            }
+                            _ => {
+                                panic!("Register slot response channel closed");
+                            }
+                        }
+                    }
+                }
             }
-            log::error!("Connection change channel closed");
         };
-
-        Self::new(connection_change_tx, true)
+        (this, tokio::spawn(dbus_task))
     }
-    pub fn new(
+    fn new(
         connection_change_tx: tokio::sync::mpsc::Sender<ConnectionChange>,
         in_memory: bool,
     ) -> Self {
@@ -122,7 +191,8 @@ impl IpcRuler {
         }
     }
 
-    async fn register_signal(&self, signal: SignalRecord) -> Result<(), rusqlite::Error> {
+    pub async fn register_signal(&mut self, signal: SignalRecord) -> Result<(), rusqlite::Error> {
+        debug!("register_signal called, signal: {:?}", signal);
         let count: i64 = self.db.query_row(
             "SELECT count(*) FROM signals WHERE name = ?;",
             [&signal.name],
@@ -157,7 +227,8 @@ impl IpcRuler {
         Ok(())
     }
 
-    async fn register_slot(&self, slot: SlotRecord) -> Result<(), rusqlite::Error> {
+    pub async fn register_slot(&mut self, slot: SlotRecord) -> Result<(), rusqlite::Error> {
+        debug!("register_slot called, slot: {:?}", slot);
         let mut connected_to = String::new();
         let found = self
             .db
@@ -208,7 +279,7 @@ impl IpcRuler {
             .expect("Failed to send connection change");
         Ok(())
     }
-    async fn connect(&self, change: ConnectionChange) -> Result<(), rusqlite::Error> {
+    pub async fn connect(&mut self, change: ConnectionChange) -> Result<(), rusqlite::Error> {
         debug!(
             "connect called, slot: {}, signal: {}",
             change.slot_name, change.signal_name
@@ -256,7 +327,8 @@ impl IpcRuler {
             .expect("Failed to send connection change");
         Ok(())
     }
-    async fn connections(&self) -> Result<String, rusqlite::Error> {
+    pub async fn connections(&mut self) -> Result<String, rusqlite::Error> {
+        debug!("connections called");
         let mut stmt = self.db.prepare(
             "SELECT signals.name, slots.name FROM signals JOIN slots ON signals.name = slots.connected_to;"
         )?;
@@ -274,7 +346,8 @@ impl IpcRuler {
 
         Ok(serde_json::to_string(&connections).expect("Failed to serialize connections"))
     }
-    async fn signals(&self) -> Result<String, rusqlite::Error> {
+    pub async fn signals(&mut self) -> Result<String, rusqlite::Error> {
+        debug!("signals called");
         let mut stmt = self.db.prepare(
             "SELECT name, type, last_registered, description, created_at, created_by FROM signals",
         )?;
@@ -293,7 +366,8 @@ impl IpcRuler {
 
         Ok(serde_json::to_string(&rows).expect("Failed to serialize signals"))
     }
-    async fn slots(&self) -> Result<String, rusqlite::Error> {
+    pub async fn slots(&mut self) -> Result<String, rusqlite::Error> {
+        debug!("slots called");
         let mut stmt = self.db.prepare(
             "SELECT name, type, last_registered, description, created_at, created_by, last_modified, modified_by, connected_to FROM slots",
         )?;
@@ -318,7 +392,7 @@ impl IpcRuler {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct SignalRecord {
+pub struct SignalRecord {
     name: String,
     #[serde(rename = "type")]
     sig_type: u8,
@@ -329,7 +403,7 @@ struct SignalRecord {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct SlotRecord {
+pub struct SlotRecord {
     name: String,
     #[serde(rename = "type")]
     slot_type: u8,
@@ -342,7 +416,7 @@ struct SlotRecord {
     description: String,
 }
 
-struct ConnectionChange {
+pub struct ConnectionChange {
     slot_name: String,
     signal_name: String,
 }
