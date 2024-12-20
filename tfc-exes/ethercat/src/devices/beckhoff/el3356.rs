@@ -295,6 +295,7 @@ impl Scale {
             dbus.clone(),
             tfc::ipc::Base::new(format!("{prefix}/mass").as_str(), Some("Mass output in kg")),
         );
+        #[cfg(feature = "dbus-expose")]
         tfc::ipc::dbus::SignalInterface::register(
             mass_signal.base(),
             dbus.clone(),
@@ -326,6 +327,7 @@ impl ReferenceScale {
                 Some("Output ratio of calibration load compared to current load"),
             ),
         );
+        #[cfg(feature = "dbus-expose")]
         tfc::ipc::dbus::SignalInterface::register(
             ratio_signal.base(),
             dbus.clone(),
@@ -410,6 +412,7 @@ impl El3356 {
                 Some("Take current weight as calibration point, according to calibration load in config"),
             ),
         );
+        #[cfg(feature = "dbus-expose")]
         tfc::ipc::dbus::SlotInterface::register(
             calibrate_slot.base(),
             dbus.clone(),
@@ -428,6 +431,7 @@ impl El3356 {
                 Some("Offset current weight on cell as zero"),
             ),
         );
+        #[cfg(feature = "dbus-expose")]
         tfc::ipc::dbus::SlotInterface::register(
             zero_calibrate_slot.base(),
             dbus.clone(),
@@ -446,6 +450,7 @@ impl El3356 {
                         Some("Offset current weight on cell as tare, meaning it will zero out the current weight"),
                     ),
                 );
+        #[cfg(feature = "dbus-expose")]
         tfc::ipc::dbus::SlotInterface::register(
             tare_slot.base(),
             dbus.clone(),
