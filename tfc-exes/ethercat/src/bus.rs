@@ -183,8 +183,6 @@ impl Bus {
         }
         trace!(target: &self.log_key, "Setup complete for devices: {}", index);
 
-        let group = group.into_op(&self.main_device).await?;
-
         let mut group = group.into_safe_op(&self.main_device).await?;
 
         debug!(target: &self.log_key, "Group in safe op");
