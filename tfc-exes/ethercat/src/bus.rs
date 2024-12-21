@@ -28,7 +28,7 @@ const MAX_SUBDEVICES: usize = 16;
 /// Maximum PDU data payload size - set this to the max PDI size or higher.
 const MAX_PDU_DATA: usize = 1100;
 /// Maximum number of EtherCAT frames that can be in flight at any one time.
-const MAX_FRAMES: usize = 16;
+const MAX_FRAMES: usize = 32;
 /// Maximum total PDI length. // LENZE i550 requires 66 bytes
 const PDI_LEN: usize = 76;
 
@@ -75,7 +75,7 @@ impl Bus {
         let main_device = Arc::new(MainDevice::new(
             pdu_loop,
             Timeouts {
-                wait_loop_delay: Duration::from_micros(100),
+                wait_loop_delay: Duration::from_millis(1),
                 ..Default::default()
             },
             MainDeviceConfig::default(),
