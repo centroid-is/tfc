@@ -13,6 +13,17 @@ use crate::opcua::OpcuaServer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    std::panic::set_hook(Box::new(|panic_info| {
+        let message = if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.as_str()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s
+        } else {
+            "Unknown panic message"
+        };
+        log::error!("{}\n\nCritical error: {:#?}", message, panic_info);
+        std::process::abort();
+    }));
     // console_subscriber::init();
     progbase::init();
     println!("Starting ethercat");

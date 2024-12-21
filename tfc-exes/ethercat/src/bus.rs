@@ -28,7 +28,7 @@ const MAX_SUBDEVICES: usize = 16;
 /// Maximum PDU data payload size - set this to the max PDI size or higher.
 const MAX_PDU_DATA: usize = 1100;
 /// Maximum number of EtherCAT frames that can be in flight at any one time.
-const MAX_FRAMES: usize = 16;
+const MAX_FRAMES: usize = 32;
 /// Maximum total PDI length. // LENZE i550 requires 66 bytes
 const PDI_LEN: usize = 76;
 
@@ -74,7 +74,10 @@ impl Bus {
 
         let main_device = Arc::new(MainDevice::new(
             pdu_loop,
-            Timeouts::default(),
+            Timeouts {
+                wait_loop_delay: Duration::from_millis(1),
+                ..Default::default()
+            },
             MainDeviceConfig::default(),
         ));
 
@@ -87,7 +90,7 @@ impl Bus {
             // Might need to set `<user> hard rtprio 99` and `<user> soft rtprio 99` in `/etc/security/limits.conf`
             // Check limits with `ulimit -Hr` or `ulimit -Sr`
             .priority(ThreadPriority::Crossplatform(
-                ThreadPriorityValue::try_from(49u8).unwrap(),
+                ThreadPriorityValue::try_from(99u8).unwrap(),
             ));
         #[cfg(target_os = "linux")]
         let tx_rx_thread = tx_rx_thread
@@ -104,10 +107,15 @@ impl Bus {
                 #[cfg(target_os = "linux")]
                 // Blocking io_uring
                 tx_rx_task_io_uring(&interface, tx, rx).expect("TX/RX task");
+
                 #[cfg(not(target_os = "linux"))]
-                let _ = tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(async move { tx_rx_task(&interface, tx, rx) });
+                let ex = async_executor::LocalExecutor::new();
+                #[cfg(not(target_os = "linux"))]
+                futures_lite::future::block_on(
+                    ex.run(tx_rx_task(&interface, tx, rx).expect("spawn TX/RX task")),
+                )
+                .expect("TX/RX task exited");
+                panic!("Unreachable, should not be here");
             })
             .unwrap();
 
@@ -175,9 +183,7 @@ impl Bus {
         }
         trace!(target: &self.log_key, "Setup complete for devices: {}", index);
 
-        // let group = group.into_op(&self.main_device).await?;
-
-        let group = group.into_safe_op(&self.main_device).await?;
+        let mut group = group.into_safe_op(&self.main_device).await?;
 
         debug!(target: &self.log_key, "Group in safe op");
 
