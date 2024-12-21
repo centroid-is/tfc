@@ -25,11 +25,12 @@ atomic_refcell = "0.1.13"
 bitvec = "1.0.1"
 console-subscriber = "0.4.1"
 derive_more = { version = "1.0.0", features = ["display"] }
-ethercrab = "0.5.0"
+ethercrab = { git = "https://github.com/ethercrab-rs/ethercrab.git", rev = "52b570f3690f5d20605f69758d57b8d3860dd93d" }
 futures = "0.3.30"
 futures-channel = "0.3.30"
 tracing = "0.1.40"
-ethercrab-wire = "0.2.0"
+ethercrab-wire = { git = "https://github.com/ethercrab-rs/ethercrab.git", subpath = "ethercrab-wire", rev = "52b570f3690f5d20605f69758d57b8d3860dd93d" }
+# ethercrab-wire = "0.2.0"
 uom = { version = "0.36.0", default-features = false, features = [
     "autoconvert", # automatic base unit conversion.
     "usize",
