@@ -107,14 +107,15 @@ impl Bus {
                 #[cfg(target_os = "linux")]
                 // Blocking io_uring
                 tx_rx_task_io_uring(&interface, tx, rx).expect("TX/RX task");
-                // #[cfg(not(target_os = "linux"))]
-                // let ex = async_executor::LocalExecutor::new();
 
-                // futures_lite::future::block_on(
-                //     ex.run(tx_rx_task(&interface, tx, rx).expect("spawn TX/RX task")),
-                // )
-                // .expect("TX/RX task exited");
-                // panic!("Unreachable, should not be here");
+                #[cfg(not(target_os = "linux"))]
+                let ex = async_executor::LocalExecutor::new();
+                #[cfg(not(target_os = "linux"))]
+                futures_lite::future::block_on(
+                    ex.run(tx_rx_task(&interface, tx, rx).expect("spawn TX/RX task")),
+                )
+                .expect("TX/RX task exited");
+                panic!("Unreachable, should not be here");
             })
             .unwrap();
 
@@ -152,37 +153,37 @@ impl Bus {
             .into());
         }
 
-        // let mut index: u16 = 0;
-        // for (idx, mut subdevice) in group.iter(&self.main_device).enumerate() {
-        //     let identity = subdevice.identity();
-        //     if self.devices[idx].vendor_id() != identity.vendor_id
-        //         || self.devices[idx].product_id() != identity.product_id
-        //     {
-        //         self.devices[idx] = make_device(
-        //             dbus.clone(),
-        //             identity.vendor_id,
-        //             identity.product_id,
-        //             index,
-        //             subdevice.alias_address(),
-        //             subdevice.name(),
-        //         );
-        //         #[cfg(feature = "opcua-expose")]
-        //         self.devices[idx].opcua_register(
-        //             self.opcua_handle.manager.clone(),
-        //             self.opcua_handle.subscriptions.clone(),
-        //             self.opcua_handle.namespace,
-        //         )?;
-        //     }
-        //     // TODO: Make futures that can be awaited in parallel
-        //     self.devices[idx].setup(&mut subdevice).await.map_err(|e| {
-        //         warn!(target: &self.log_key, "Failed to setup device {}: {}", index, e);
-        //         e
-        //     })?;
-        //     index += 1;
-        // }
-        // trace!(target: &self.log_key, "Setup complete for devices: {}", index);
+        let mut index: u16 = 0;
+        for (idx, mut subdevice) in group.iter(&self.main_device).enumerate() {
+            let identity = subdevice.identity();
+            if self.devices[idx].vendor_id() != identity.vendor_id
+                || self.devices[idx].product_id() != identity.product_id
+            {
+                self.devices[idx] = make_device(
+                    dbus.clone(),
+                    identity.vendor_id,
+                    identity.product_id,
+                    index,
+                    subdevice.alias_address(),
+                    subdevice.name(),
+                );
+                #[cfg(feature = "opcua-expose")]
+                self.devices[idx].opcua_register(
+                    self.opcua_handle.manager.clone(),
+                    self.opcua_handle.subscriptions.clone(),
+                    self.opcua_handle.namespace,
+                )?;
+            }
+            // TODO: Make futures that can be awaited in parallel
+            self.devices[idx].setup(&mut subdevice).await.map_err(|e| {
+                warn!(target: &self.log_key, "Failed to setup device {}: {}", index, e);
+                e
+            })?;
+            index += 1;
+        }
+        trace!(target: &self.log_key, "Setup complete for devices: {}", index);
 
-        // let group = group.into_op(&self.main_device).await?;
+        let group = group.into_op(&self.main_device).await?;
 
         let mut group = group.into_safe_op(&self.main_device).await?;
 
@@ -245,19 +246,19 @@ impl Bus {
 
             let process_data_instant = Instant::now();
             for (device_index, mut subdevice) in group.iter(&self.main_device).enumerate() {
-                // if let Some(device) = self.devices.get_mut(device_index) {
-                //     match device.process_data(&mut subdevice).await {
-                //         Ok(()) => {
-                //             device_errors[device_index] = None;
-                //         }
-                //         Err(e) => {
-                //             if device_errors[device_index].is_none() {
-                //                 warn!(target: &self.log_key, "Failed to process data for subdevice {}: {}", device_index, e);
-                //             }
-                //             device_errors[device_index] = Some(e);
-                //         }
-                //     }
-                // }
+                if let Some(device) = self.devices.get_mut(device_index) {
+                    match device.process_data(&mut subdevice).await {
+                        Ok(()) => {
+                            device_errors[device_index] = None;
+                        }
+                        Err(e) => {
+                            if device_errors[device_index].is_none() {
+                                warn!(target: &self.log_key, "Failed to process data for subdevice {}: {}", device_index, e);
+                            }
+                            device_errors[device_index] = Some(e);
+                        }
+                    }
+                }
             }
             process_data_duration += process_data_instant.elapsed();
 
