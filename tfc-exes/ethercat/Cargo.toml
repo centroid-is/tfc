@@ -67,6 +67,6 @@ name = "ethercat"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["dbus-expose", "opcua-expose"]
 dbus-expose = []
 opcua-expose = ["dep:opcua"]
