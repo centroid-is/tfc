@@ -1,3 +1,4 @@
+#[cfg(feature = "opcua-expose")]
 use opcua::server::{
     node_manager::memory::{
         simple_node_manager, InMemoryNodeManager, NamespaceMetadata, SimpleNodeManager,
@@ -5,14 +6,18 @@ use opcua::server::{
     },
     ServerBuilder, SubscriptionCache,
 };
+#[cfg(feature = "opcua-expose")]
 use std::path::PathBuf;
+#[cfg(feature = "opcua-expose")]
 use std::sync::Arc;
 
+#[cfg(feature = "opcua-expose")]
 pub struct OpcuaServer {
     pub server: opcua::server::Server,
     pub handle: opcua::server::ServerHandle,
 }
 
+#[cfg(feature = "opcua-expose")]
 impl OpcuaServer {
     pub fn new(
         path: impl Into<PathBuf>,
@@ -44,6 +49,7 @@ impl OpcuaServer {
         }
     }
 }
+#[cfg(feature = "opcua-expose")]
 pub struct OpcuaServerHandle {
     pub manager: Arc<InMemoryNodeManager<SimpleNodeManagerImpl>>,
     pub subscriptions: Arc<SubscriptionCache>,
