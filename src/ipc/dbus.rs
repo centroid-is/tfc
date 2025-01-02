@@ -60,7 +60,7 @@ impl<
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                     continue;
                 }
-                let iface: zbus::InterfaceRef<SignalInterface<T>> = iface.unwrap();
+                let iface: zbus::object_server::InterfaceRef<SignalInterface<T>> = iface.unwrap();
                 watch_cp
                     .changed()
                     .await
@@ -69,7 +69,7 @@ impl<
                 let copy_val: Option<T> = watch_cp.borrow_and_update().clone();
                 match copy_val {
                     Some(ref value) => {
-                        SignalInterface::value(&iface.signal_context(), value)
+                        SignalInterface::value(&iface.signal_emitter(), value)
                             .await
                             .expect("Error sending value");
                     }
@@ -130,7 +130,10 @@ where
         }
     }
     #[zbus(signal)]
-    async fn value(signal_ctxt: &zbus::SignalContext<'_>, val: &T) -> zbus::Result<()>;
+    async fn value(
+        signal_ctxt: &zbus::object_server::SignalEmitter<'_>,
+        val: &T,
+    ) -> Result<(), zbus::Error>;
 }
 
 impl<T> Drop for SignalInterface<T> {
@@ -192,13 +195,13 @@ impl<
                 let copy_val: Option<T> = watch_cp.borrow_and_update().clone();
                 match copy_val {
                     Some(ref value) => {
-                        let iface: zbus::InterfaceRef<SlotInterface<T>> = dbus_cp
+                        let iface: zbus::object_server::InterfaceRef<SlotInterface<T>> = dbus_cp
                             .clone()
                             .object_server()
                             .interface(path_cp.clone())
                             .await
                             .expect("Error getting interface");
-                        SlotInterface::value(&iface.signal_context(), value)
+                        SlotInterface::value(&iface.signal_emitter(), value)
                             .await
                             .expect("Error sending value");
                     }
@@ -265,7 +268,10 @@ where
         Ok(())
     }
     #[zbus(signal)]
-    async fn value(signal_ctxt: &zbus::SignalContext<'_>, val: &T) -> zbus::Result<()>;
+    async fn value(
+        signal_ctxt: &zbus::object_server::SignalEmitter<'_>,
+        val: &T,
+    ) -> zbus::Result<()>;
 }
 
 impl<T> Drop for SlotInterface<T> {
