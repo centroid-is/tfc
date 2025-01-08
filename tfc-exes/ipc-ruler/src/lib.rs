@@ -264,20 +264,22 @@ impl IpcRuler {
         debug!(target: LOG_KEY, "register_slot called, slot: {:?}", slot);
         let db = self.db.lock().await;
         let mut connected_to = String::new();
-        let found = db
-            .query_row(
+
+        // Check if slot exists and get its connected_to value
+        let count: i64 = db.query_row(
+            "SELECT count(*) FROM slots WHERE name = ?;",
+            [&slot.name],
+            |row| row.get(0),
+        )?;
+
+        if count > 0 {
+            // Update existing slot
+            connected_to = db.query_row(
                 "SELECT connected_to FROM slots WHERE name = ?;",
                 [&slot.name],
-                |row| row.get::<_, String>(0),
-            )
-            .ok()
-            .map(|val| {
-                connected_to = val;
-                true
-            })
-            .unwrap_or(false);
-        if found {
-            // update the slot
+                |row| row.get(0),
+            )?;
+
             db.execute(
                 "UPDATE slots SET last_registered = ?, description = ?, type = ?, created_by = ? WHERE name = ?;",
                 rusqlite::params![
@@ -289,7 +291,7 @@ impl IpcRuler {
                 ],
             )?;
         } else {
-            // Insert the slot
+            // Insert new slot
             db.execute(
                 "INSERT INTO slots (name, type, created_by, created_at, last_registered, last_modified, description) VALUES (?, ?, ?, ?, ?, ?, ?);",
                 rusqlite::params![
