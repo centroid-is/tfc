@@ -521,4 +521,58 @@ mod tests {
         handle.abort();
         Ok(())
     }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_slot_reregistration() -> Result<(), Box<dyn std::error::Error>> {
+        tfc::logger::init_test_logger(log::LevelFilter::Trace)?;
+        let bus = zbus::connection::Builder::system()?
+            .name(DBUS_SERVICE)?
+            .build()
+            .await?;
+
+        let handle = IpcRuler::spawn(bus.clone(), true);
+        let proxy = IpcRulerProxy::builder(&bus)
+            .cache_properties(zbus::CacheProperties::No)
+            .build()
+            .await?;
+
+        let mut i = 0;
+        while i < 10 {
+            let res = tokio::time::timeout(
+                tokio::time::Duration::from_millis(1),
+                proxy.register_slot("test_slot", "test_description", 1),
+            )
+            .await;
+            if res.is_ok() {
+                break;
+            }
+            i += 1;
+        }
+        let slots = proxy.slots().await?;
+        let initial_len = slots.len();
+        assert!(slots.contains("test_slot"));
+
+        // Re-register the same slot
+        let mut i = 0;
+        while i < 10 {
+            let res = tokio::time::timeout(
+                tokio::time::Duration::from_millis(1),
+                proxy.register_slot("test_slot", "test_description", 1),
+            )
+            .await;
+            if res.is_ok() {
+                break;
+            }
+            i += 1;
+        }
+        let slots = proxy.slots().await?;
+        trace!("slots: {:?}", slots);
+
+        let slots: Vec<SlotRecord> = serde_json::from_str(&slots)?;
+        assert!(slots.len() == 1);
+
+        handle.abort();
+        Ok(())
+    }
 }
