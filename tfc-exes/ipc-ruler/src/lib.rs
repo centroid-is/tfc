@@ -1,4 +1,4 @@
-use log::debug;
+use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tfc::progbase;
@@ -273,9 +273,9 @@ impl IpcRuler {
         )?;
 
         if count > 0 {
-            // Update existing slot
+            // Update existing slot and handle null connected_to values
             connected_to = db.query_row(
-                "SELECT connected_to FROM slots WHERE name = ?;",
+                "SELECT COALESCE(connected_to, '') FROM slots WHERE name = ?;",
                 [&slot.name],
                 |row| row.get(0),
             )?;
@@ -293,7 +293,7 @@ impl IpcRuler {
         } else {
             // Insert new slot
             db.execute(
-                "INSERT INTO slots (name, type, created_by, created_at, last_registered, last_modified, description) VALUES (?, ?, ?, ?, ?, ?, ?);",
+                "INSERT INTO slots (name, type, created_by, created_at, last_registered, last_modified, description, connected_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
                 rusqlite::params![
                     slot.name,
                     slot.slot_type,
@@ -301,7 +301,8 @@ impl IpcRuler {
                     slot.created_at,
                     slot.last_registered,
                     slot.last_modified,
-                    slot.description
+                    slot.description,
+                    "" // Initialize connected_to with empty string
                 ],
             )?;
         }
@@ -428,7 +429,10 @@ impl IpcRuler {
                 description,
             })
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+            .map_err(|e| {
+                error!(target: LOG_KEY, "register_slot failed, error: {}", e);
+                zbus::fdo::Error::Failed(e.to_string())
+            })?;
         IpcRuler::connection_change(&ctxt, &name, &connected_to).await?;
         Ok(())
     }
@@ -547,29 +551,35 @@ mod tests {
             )
             .await;
             if res.is_ok() {
+                // assert that the slot got registered
+                assert!(res.unwrap().is_ok());
                 break;
             }
             i += 1;
         }
+        assert!(i < 10);
         let slots = proxy.slots().await?;
         let initial_len = slots.len();
         assert!(slots.contains("test_slot"));
 
         // Re-register the same slot
         let mut i = 0;
+        let mut res;
         while i < 10 {
-            let res = tokio::time::timeout(
+            res = tokio::time::timeout(
                 tokio::time::Duration::from_millis(1),
                 proxy.register_slot("test_slot", "test_description", 1),
             )
             .await;
             if res.is_ok() {
+                // assert that the slot got updated
+                assert!(res.unwrap().is_ok());
                 break;
             }
             i += 1;
         }
         let slots = proxy.slots().await?;
-        trace!("slots: {:?}", slots);
+        trace!("I is {} slots: {:?}", i, slots);
 
         let slots: Vec<SlotRecord> = serde_json::from_str(&slots)?;
         assert!(slots.len() == 1);
