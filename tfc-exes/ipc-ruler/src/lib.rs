@@ -1,4 +1,4 @@
-use log::debug;
+use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tfc::progbase;
@@ -194,26 +194,30 @@ impl IpcRuler {
         if slot_count == 0 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        let signal_count: i64 = db.query_row(
-            "SELECT count(*) FROM signals WHERE name = ?;",
-            [&change.signal_name],
-            |row| row.get(0),
-        )?;
-        if signal_count == 0 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        }
-        let signal_type: u8 = db.query_row(
-            "SELECT type FROM signals WHERE name = ?;",
-            [&change.signal_name],
-            |row| row.get(0),
-        )?;
-        let slot_type: u8 = db.query_row(
-            "SELECT type FROM slots WHERE name = ?;",
-            [&change.slot_name],
-            |row| row.get(0),
-        )?;
-        if signal_type != slot_type {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
+
+        // Skip signal validation if we're disconnecting (empty signal name)
+        if !change.signal_name.is_empty() {
+            let signal_count: i64 = db.query_row(
+                "SELECT count(*) FROM signals WHERE name = ?;",
+                [&change.signal_name],
+                |row| row.get(0),
+            )?;
+            if signal_count == 0 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            let signal_type: u8 = db.query_row(
+                "SELECT type FROM signals WHERE name = ?;",
+                [&change.signal_name],
+                |row| row.get(0),
+            )?;
+            let slot_type: u8 = db.query_row(
+                "SELECT type FROM slots WHERE name = ?;",
+                [&change.slot_name],
+                |row| row.get(0),
+            )?;
+            if signal_type != slot_type {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
         }
 
         db.execute(
@@ -264,20 +268,22 @@ impl IpcRuler {
         debug!(target: LOG_KEY, "register_slot called, slot: {:?}", slot);
         let db = self.db.lock().await;
         let mut connected_to = String::new();
-        let found = db
-            .query_row(
-                "SELECT connected_to FROM slots WHERE name = ?;",
+
+        // Check if slot exists and get its connected_to value
+        let count: i64 = db.query_row(
+            "SELECT count(*) FROM slots WHERE name = ?;",
+            [&slot.name],
+            |row| row.get(0),
+        )?;
+
+        if count > 0 {
+            // Update existing slot and handle null connected_to values
+            connected_to = db.query_row(
+                "SELECT COALESCE(connected_to, '') FROM slots WHERE name = ?;",
                 [&slot.name],
-                |row| row.get::<_, String>(0),
-            )
-            .ok()
-            .map(|val| {
-                connected_to = val;
-                true
-            })
-            .unwrap_or(false);
-        if found {
-            // update the slot
+                |row| row.get(0),
+            )?;
+
             db.execute(
                 "UPDATE slots SET last_registered = ?, description = ?, type = ?, created_by = ? WHERE name = ?;",
                 rusqlite::params![
@@ -289,9 +295,9 @@ impl IpcRuler {
                 ],
             )?;
         } else {
-            // Insert the slot
+            // Insert new slot
             db.execute(
-                "INSERT INTO slots (name, type, created_by, created_at, last_registered, last_modified, description) VALUES (?, ?, ?, ?, ?, ?, ?);",
+                "INSERT INTO slots (name, type, created_by, created_at, last_registered, last_modified, description, connected_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
                 rusqlite::params![
                     slot.name,
                     slot.slot_type,
@@ -299,7 +305,8 @@ impl IpcRuler {
                     slot.created_at,
                     slot.last_registered,
                     slot.last_modified,
-                    slot.description
+                    slot.description,
+                    "" // Initialize connected_to with empty string
                 ],
             )?;
         }
@@ -312,23 +319,26 @@ impl IpcRuler {
 impl IpcRuler {
     #[zbus(property)]
     async fn connections(&self) -> zbus::fdo::Result<String> {
-        self.connections_impl()
-            .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+        self.connections_impl().await.map_err(|e| {
+            error!(target: LOG_KEY, "connections poll failed, error: {}", e);
+            zbus::fdo::Error::Failed(e.to_string())
+        })
     }
 
     #[zbus(property)]
     async fn signals(&self) -> zbus::fdo::Result<String> {
-        self.signals_impl()
-            .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+        self.signals_impl().await.map_err(|e| {
+            error!(target: LOG_KEY, "signals poll failed, error: {}", e);
+            zbus::fdo::Error::Failed(e.to_string())
+        })
     }
 
     #[zbus(property)]
     async fn slots(&self) -> zbus::fdo::Result<String> {
-        self.slots_impl()
-            .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+        self.slots_impl().await.map_err(|e| {
+            error!(target: LOG_KEY, "slots poll failed, error: {}", e);
+            zbus::fdo::Error::Failed(e.to_string())
+        })
     }
 
     async fn connect(
@@ -346,7 +356,10 @@ impl IpcRuler {
             signal_name: signal_name.clone(),
         })
         .await
-        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        .map_err(|e| {
+            error!(target: LOG_KEY, "connect failed, error: {}", e);
+            zbus::fdo::Error::Failed(e.to_string())
+        })?;
         IpcRuler::connection_change(&ctxt, &slot_name, &signal_name).await?;
         Ok(())
     }
@@ -389,7 +402,10 @@ impl IpcRuler {
             description,
         })
         .await
-        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        .map_err(|e| {
+            error!(target: LOG_KEY, "register_signal failed, error: {}", e);
+            zbus::fdo::Error::Failed(e.to_string())
+        })?;
 
         Ok(())
     }
@@ -426,7 +442,10 @@ impl IpcRuler {
                 description,
             })
             .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+            .map_err(|e| {
+                error!(target: LOG_KEY, "register_slot failed, error: {}", e);
+                zbus::fdo::Error::Failed(e.to_string())
+            })?;
         IpcRuler::connection_change(&ctxt, &name, &connected_to).await?;
         Ok(())
     }
@@ -445,80 +464,191 @@ mod tests {
     use log::trace;
     use tfc::ipc_ruler_client::IpcRulerProxy;
 
+    struct Test {
+        bus: zbus::Connection,
+        handle: tokio::task::JoinHandle<()>,
+        proxy: IpcRulerProxy<'static>,
+    }
+
+    impl Test {
+        async fn new() -> Self {
+            tfc::logger::init_test_logger(log::LevelFilter::Trace).expect("Failed to init logger");
+            let bus = zbus::connection::Builder::system()
+                .expect("zbus builder")
+                .name(DBUS_SERVICE)
+                .expect("zbus name")
+                .build()
+                .await
+                .expect("Failed to create zbus");
+            Self {
+                bus: bus.clone(),
+                handle: IpcRuler::spawn(bus.clone(), true),
+                proxy: IpcRulerProxy::builder(&bus)
+                    .cache_properties(zbus::CacheProperties::No)
+                    .build()
+                    .await
+                    .expect("Failed to create ipc ruler proxy"),
+            }
+        }
+        async fn register_signal(
+            &self,
+            name: &str,
+            description: &str,
+            type_id: u8,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let mut i = 0;
+            while i < 10 {
+                let res = tokio::time::timeout(
+                    tokio::time::Duration::from_millis(1),
+                    self.proxy.register_signal(name, description, type_id),
+                )
+                .await;
+                if res.is_ok() {
+                    if res.unwrap().is_ok() {
+                        return Ok(());
+                    }
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Failed to register signal",
+                    )));
+                }
+                trace!("res: {:?}", res);
+                i += 1;
+            }
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to register signal timeout",
+            )))
+        }
+        async fn register_slot(
+            &self,
+            name: &str,
+            description: &str,
+            type_id: u8,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let mut i = 0;
+            while i < 10 {
+                let res = tokio::time::timeout(
+                    tokio::time::Duration::from_millis(1),
+                    self.proxy.register_slot(name, description, type_id),
+                )
+                .await;
+                if res.is_ok() {
+                    if res.unwrap().is_ok() {
+                        return Ok(());
+                    }
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Failed to register slot",
+                    )));
+                }
+                trace!("res: {:?}", res);
+                i += 1;
+            }
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to register slot timeout",
+            )))
+        }
+        async fn slots(&self) -> Result<Vec<SlotRecord>, Box<dyn std::error::Error>> {
+            let slots = self.proxy.slots().await?;
+            Ok(serde_json::from_str(&slots)?)
+        }
+        async fn signals(&self) -> Result<Vec<SignalRecord>, Box<dyn std::error::Error>> {
+            let signals = self.proxy.signals().await?;
+            Ok(serde_json::from_str(&signals)?)
+        }
+    }
+    impl Drop for Test {
+        fn drop(&mut self) {
+            self.handle.abort();
+        }
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn test_register_signal() -> Result<(), Box<dyn std::error::Error>> {
-        tfc::logger::init_test_logger(log::LevelFilter::Trace)?;
-        trace!("create bus");
-        let bus = zbus::connection::Builder::system()?
-            .name(DBUS_SERVICE)?
-            .build()
-            .await?;
-        trace!("spawn ruler");
-        let handle = IpcRuler::spawn(bus.clone(), true);
-        trace!("create proxy");
-        let proxy = IpcRulerProxy::builder(&bus)
-            .cache_properties(zbus::CacheProperties::No)
-            .build()
+        let test = Test::new().await;
+        assert!(test
+            .register_signal("test_signal", "test_description", 1)
             .await
-            .unwrap();
-        trace!("register signal");
-        let mut i = 0;
-        while i < 10 {
-            let res = tokio::time::timeout(
-                tokio::time::Duration::from_millis(1),
-                proxy.register_signal("test_signal", "test_description", 1),
-            )
-            .await;
-            if res.is_ok() {
-                break;
-            }
-            trace!("res: {:?}", res);
-            i += 1;
-        }
-        let signals = proxy.signals().await?;
+            .is_ok());
+        let signals = test.proxy.signals().await?;
 
         assert!(signals.contains("test_signal"));
         trace!("signals: {:?}", signals);
 
-        handle.abort();
         Ok(())
     }
 
     #[tokio::test]
     #[serial_test::serial]
     async fn test_register_slot() -> Result<(), Box<dyn std::error::Error>> {
-        tfc::logger::init_test_logger(log::LevelFilter::Trace)?;
-        trace!("create bus");
-        let bus = zbus::connection::Builder::system()?
-            .name(DBUS_SERVICE)?
-            .build()
-            .await?;
-        trace!("spawn ruler");
-        let handle = IpcRuler::spawn(bus.clone(), true);
-        trace!("create proxy");
-        let proxy = IpcRulerProxy::builder(&bus)
-            .cache_properties(zbus::CacheProperties::No)
-            .build()
+        let test = Test::new().await;
+        assert!(test
+            .register_slot("test_slot", "test_description", 1)
             .await
-            .unwrap();
-        trace!("register slot");
-        let mut i = 0;
-        while i < 10 {
-            let res = tokio::time::timeout(
-                tokio::time::Duration::from_millis(1),
-                proxy.register_slot("test_slot", "test_description", 1),
-            )
-            .await;
-            if res.is_ok() {
-                break;
-            }
-            i += 1;
-        }
-        let slots = proxy.slots().await?;
+            .is_ok());
+        let slots = test.proxy.slots().await?;
         assert!(slots.contains("test_slot"));
         trace!("slots: {:?}", slots);
-        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_slot_reregistration() -> Result<(), Box<dyn std::error::Error>> {
+        let test = Test::new().await;
+        assert!(test
+            .register_slot("test_slot", "test_description", 1)
+            .await
+            .is_ok());
+        let slots = test.slots().await?;
+        assert!(slots.len() == 1);
+        assert!(test
+            .register_slot("test_slot", "test_description", 1)
+            .await
+            .is_ok());
+        let slots = test.slots().await?;
+        assert!(slots.len() == 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_reregister_signal() -> Result<(), Box<dyn std::error::Error>> {
+        let test = Test::new().await;
+        assert!(test
+            .register_signal("test_signal", "test_description", 1)
+            .await
+            .is_ok());
+        let signals = test.signals().await?;
+        assert!(signals.len() == 1);
+        assert!(test
+            .register_signal("test_signal", "test_description", 1)
+            .await
+            .is_ok());
+        let signals = test.signals().await?;
+        assert!(signals.len() == 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_disconnect() -> Result<(), Box<dyn std::error::Error>> {
+        let test = Test::new().await;
+        assert!(test
+            .register_slot("test_slot", "test_description", 1)
+            .await
+            .is_ok());
+        assert!(test
+            .register_signal("test_signal", "test_description", 1)
+            .await
+            .is_ok());
+        test.proxy.connect("test_slot", "test_signal").await?;
+        test.proxy.disconnect("test_slot").await?;
+        let connections = test.proxy.connections().await?;
+        assert!(!connections.contains("test_slot"));
         Ok(())
     }
 }
