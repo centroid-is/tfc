@@ -214,7 +214,6 @@ struct Config {
     calibration_signal_read: f64,
     #[schemars(description = "Resolution, smallest scale increment, like 0.001 kg or 0.010 kg")]
     resolution: f64, // kg
-    #[schemars(description = "Mode of operation")]
     mode: Mode,
     #[schemars(
         description = "Number of samples to use for average filter. Process data interval."
