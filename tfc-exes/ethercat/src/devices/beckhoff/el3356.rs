@@ -606,15 +606,7 @@ impl Device for El3356 {
 
         let raw_signal = input_pdo.raw_value as f64;
 
-        let signal_raw = self.filter.consume(raw_signal);
-
-        let signal = match &self.mode {
-            ModeImpl::Scale(ref scale) => {
-                let ratio = scale.ratio.load(std::sync::atomic::Ordering::Relaxed);
-                signal_raw / ratio // normalized value of raw value with respect to the given ratio
-            }
-            ModeImpl::Reference(_) => signal_raw,
-        };
+        let signal = self.filter.consume(raw_signal);
 
         // if self.cnt % 1000 == 0 {
         //     let input_pdo = InputPdo::unpack_from_slice(&i).expect("Error unpacking input PDO");
@@ -634,13 +626,21 @@ impl Device for El3356 {
         //         .expect("Error packing output PDO");
         // }
 
+        let signal_scaled = match &self.mode {
+            ModeImpl::Scale(ref scale) => {
+                signal / scale.ratio.load(std::sync::atomic::Ordering::Relaxed)
+            }
+            ModeImpl::Reference(_) => signal,
+        };
+
         // let's see whether we should set zero signal read now
         if self
             .zero_calibrate_cmd
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            self.config.write().value_mut().zero_signal_read = signal;
-            info!(target: &self.log_key, "Zero signal read set to {}", signal);
+            // I am guessing this is correct, but I am not sure
+            self.config.write().value_mut().zero_signal_read = signal_scaled;
+            info!(target: &self.log_key, "Zero signal read set to {}", signal_scaled);
             self.zero_calibrate_cmd
                 .store(false, std::sync::atomic::Ordering::Relaxed);
         }
@@ -650,8 +650,9 @@ impl Device for El3356 {
             .calibrate_cmd
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            self.config.write().value_mut().calibration_signal_read = signal;
-            info!(target: &self.log_key, "Calibration signal read set to {}", signal);
+            // I am guessing this is correct, but I am not sure
+            self.config.write().value_mut().calibration_signal_read = signal_scaled;
+            info!(target: &self.log_key, "Calibration signal read set to {}", signal_scaled);
             self.calibrate_cmd
                 .store(false, std::sync::atomic::Ordering::Relaxed);
         }
@@ -688,6 +689,10 @@ impl Device for El3356 {
                     self.tare_cmd
                         .store(false, std::sync::atomic::Ordering::Relaxed);
                 }
+
+                // take into account the ratio of gravity
+                let ratio = scale.ratio.load(std::sync::atomic::Ordering::Relaxed);
+                let signal_mass = signal_mass / ratio;
 
                 // lets scale the full resolution down to the given resolution
                 let scaling_factor = 1.0 / self.config.read().resolution; // 0.001 example
