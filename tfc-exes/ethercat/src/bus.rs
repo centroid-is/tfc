@@ -187,7 +187,26 @@ impl Bus {
 
         debug!(target: &self.log_key, "Group in safe op");
 
-        self.expected_working_counter = group.tx_rx(&self.main_device).await?;
+        let mut stable_wc_count = 0;
+        let mut last_wc = 0;
+        let mut try_count = 0;
+        let mut tick_interval = tokio::time::interval(self.config.read().cycle_time.into());
+        while stable_wc_count < 3 {
+            // Require 3 consecutive matching working counters
+            let wc = group.tx_rx(&self.main_device).await?;
+            if wc == last_wc {
+                stable_wc_count += 1;
+            } else {
+                stable_wc_count = 1;
+                last_wc = wc;
+            }
+            try_count += 1;
+            if try_count > 100 {
+                return Err("Failed to get stable working counter".into());
+            }
+            tick_interval.tick().await;
+        }
+        self.expected_working_counter = last_wc;
         info!(target: &self.log_key, "Group in safe op Tx/Rx complete, now will expect working counter to be: {}", self.expected_working_counter);
 
         let group = group.into_op(&self.main_device).await?;
