@@ -626,19 +626,18 @@ impl Device for El3356 {
         //         .expect("Error packing output PDO");
         // }
 
-        let signal_scaled = match &self.mode {
-            ModeImpl::Scale(ref scale) => {
-                signal / scale.ratio.load(std::sync::atomic::Ordering::Relaxed)
-            }
-            ModeImpl::Reference(_) => signal,
-        };
-
         // let's see whether we should set zero signal read now
         if self
             .zero_calibrate_cmd
             .load(std::sync::atomic::Ordering::Relaxed)
         {
             // I am guessing this is correct, but I am not sure
+            let signal_scaled = match &self.mode {
+                ModeImpl::Scale(ref scale) => {
+                    signal / scale.ratio.load(std::sync::atomic::Ordering::Relaxed)
+                }
+                ModeImpl::Reference(_) => signal,
+            };
             self.config.write().value_mut().zero_signal_read = signal_scaled;
             info!(target: &self.log_key, "Zero signal read set to {}", signal_scaled);
             self.zero_calibrate_cmd
@@ -650,6 +649,17 @@ impl Device for El3356 {
             .calibrate_cmd
             .load(std::sync::atomic::Ordering::Relaxed)
         {
+            // lets begin by withdraw the zero signal read
+            let signal_scaled = signal - self.config.read().zero_signal_read;
+            // now we need to scale it to the gravity factor
+            let signal_scaled = match &self.mode {
+                ModeImpl::Scale(ref scale) => {
+                    signal_scaled / scale.ratio.load(std::sync::atomic::Ordering::Relaxed)
+                }
+                ModeImpl::Reference(_) => signal_scaled,
+            };
+            // lets add back in the zero signal read
+            let signal_scaled = signal_scaled + self.config.read().zero_signal_read;
             // I am guessing this is correct, but I am not sure
             self.config.write().value_mut().calibration_signal_read = signal_scaled;
             info!(target: &self.log_key, "Calibration signal read set to {}", signal_scaled);
