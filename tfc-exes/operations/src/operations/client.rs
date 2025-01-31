@@ -1,9 +1,8 @@
 use futures::stream::StreamExt;
 use log::{debug, info, trace, warn};
-use std::cell::RefCell;
 use std::sync::Arc;
 use tokio::sync::{watch, Notify};
-use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use zbus::proxy;
 
 use crate::operations::common::{OperationMode, OperationsUpdate};
@@ -29,7 +28,7 @@ pub struct OperationsClient {
     set_mode_sender: watch::Sender<String>,
     #[allow(dead_code)]
     stop_sender: watch::Sender<String>,
-    handles: RefCell<Vec<JoinHandle<()>>>, // I want non mutable self in the implementation
+    cancel_token: CancellationToken,
     #[allow(dead_code)]
     log_key: String,
 }
@@ -44,7 +43,9 @@ impl OperationsClient {
         let log_key_cp = log_key.clone();
 
         let update_sender_cp = update_sender.clone();
-        let handle = tokio::spawn(async move {
+        let cancel_token = CancellationToken::new();
+        let child_token = cancel_token.child_token();
+        tokio::spawn(async move {
             let proxy = OperationsDBusClientProxy::builder(&bus)
                 .cache_properties(zbus::CacheProperties::No)
                 .build()
@@ -83,6 +84,10 @@ impl OperationsClient {
                             debug!(target: &log_key_cp, "TODO this log is showing up a lot even though it receives updates below: new_mode={:?}, old_mode={:?}, error={:?}, receiver_count={:?}", new_mode, old_mode, res.err(), update_sender_cp.receiver_count());
                         }
                     }
+                    _ = child_token.cancelled() => {
+                        debug!(target: &log_key_cp, "Cancelling OperationsClient");
+                        break;
+                    }
                 }
             }
         });
@@ -90,7 +95,7 @@ impl OperationsClient {
             update_sender,
             set_mode_sender,
             stop_sender,
-            handles: RefCell::new(vec![handle]),
+            cancel_token,
             log_key,
         }
     }
@@ -117,21 +122,33 @@ impl OperationsClient {
         let notify = Arc::new(Notify::new());
         let notify_cp = notify.clone();
         let log_key = self.log_key.clone();
-        self.handles.borrow_mut().push(tokio::spawn(async move {
+        let child_token = self.cancel_token.child_token();
+        tokio::spawn(async move {
             debug!(target: &log_key, "Subscribed to entry of {:?}", operation_mode);
             loop {
-                let res = update_receiver.changed().await;
-                if res.is_err() {
-                    warn!(target: &log_key, "Error subscribing to entry of {:?}: {:?}", operation_mode, res.err());
-                    break;
-                }
-                let update = update_receiver.borrow_and_update();
-                debug!(target: &log_key, "Entry mode, Received update: new_mode={:?}, old_mode={:?}", update.new_mode, update.old_mode);
-                if update.new_mode == operation_mode {
-                    notify.notify_waiters();
+                tokio::select! {
+                    _ = child_token.cancelled() => {
+                        debug!(target: &log_key, "Cancelling OperationsClient");
+                        break;
+                    }
+                    result = update_receiver.changed() => {
+                        match result {
+                            Ok(_) => {
+                                let update = update_receiver.borrow_and_update();
+                                debug!(target: &log_key, "Entry mode, Received update: new_mode={:?}, old_mode={:?}", update.new_mode, update.old_mode);
+                                if update.new_mode == operation_mode {
+                                    notify.notify_waiters();
+                                }
+                            }
+                            Err(e) => {
+                                warn!(target: &log_key, "Error subscribing to entry of {:?}: {:?}", operation_mode, e);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
-        }));
+        });
         notify_cp
     }
     #[allow(dead_code)]
@@ -140,34 +157,38 @@ impl OperationsClient {
         let notify = Arc::new(Notify::new());
         let notify_cp = notify.clone();
         let log_key = self.log_key.clone();
-        self.handles.borrow_mut().push(tokio::spawn(async move {
+        let child_token = self.cancel_token.child_token();
+        tokio::spawn(async move {
             debug!(target: &log_key, "Subscribed to exit of {:?}", operation_mode);
             loop {
-                let res = update_receiver.changed().await;
-                if res.is_err() {
-                    warn!(target: &log_key, "Error subscribing to exit of {:?}: {:?}", operation_mode, res.err());
-                    break;
-                }
-                let update = update_receiver.borrow_and_update();
-                debug!(target: &log_key, "Exit mode, Received update: new_mode={:?}, old_mode={:?}", update.new_mode, update.old_mode);
-                if update.old_mode == operation_mode {
-                    notify.notify_waiters();
+                tokio::select! {
+                    _ = child_token.cancelled() => {
+                        debug!(target: &log_key, "Cancelling OperationsClient");
+                        break;
+                    }
+                    result = update_receiver.changed() => {
+                        match result {
+                            Ok(_) => {
+                                let update = update_receiver.borrow_and_update();
+                                debug!(target: &log_key, "Exit mode, Received update: new_mode={:?}, old_mode={:?}", update.new_mode, update.old_mode);
+                                if update.old_mode == operation_mode {
+                                    notify.notify_waiters();
+                                }
+                            }
+                            Err(e) => {
+                                warn!(target: &log_key, "Error subscribing to exit of {:?}: {:?}", operation_mode, e);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
-        }));
+        });
         notify_cp
     }
     #[allow(dead_code)]
     pub fn mode(&self) -> OperationMode {
         self.update_sender.borrow().new_mode
-    }
-}
-
-impl Drop for OperationsClient {
-    fn drop(&mut self) {
-        for handle in self.handles.borrow_mut().drain(..) {
-            handle.abort();
-        }
     }
 }
 
