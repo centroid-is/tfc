@@ -57,7 +57,7 @@ tokio-util = "0.7.12"
 opcua = { git = "https://github.com/centroid-is/opcua.git", branch = "stable-master", commit = "7742e0d379a5f027fe3cb385bc030b0a622e3c47" }
 
 [dev-dependencies]
-rand = "0.8.5"
+rand = "0.9.0"
 
 
 [features]
