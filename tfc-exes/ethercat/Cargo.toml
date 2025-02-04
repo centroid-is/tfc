@@ -1,6 +1,6 @@
 [package]
 name = "tfc-ethercat"
-version = "2024.11.0"
+version = "2025.2.0"
 authors = ["Centroid <centroid@centroid.is>"]
 edition = "2021"
 description = "TFC ethercat service"
