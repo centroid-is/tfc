@@ -1,6 +1,6 @@
 [package]
 name = "tfc"
-version = "2024.9.1"
+version = "2025.2.0"
 authors = ["Centroid <centroid@centroid.is>"]
 edition = "2021"
 build = "build.rs"
@@ -9,7 +9,14 @@ readme = "README.md"
 repository = "https://github.com/centroid-is/tfc"
 homepage = "https://centroid.is"
 documentation = "https://tfc.centroid.is"
-keywords = ["framework", "distributed", "real-time", "event-driven", "scalable", "resilient"]
+keywords = [
+    "framework",
+    "distributed",
+    "real-time",
+    "event-driven",
+    "scalable",
+    "resilient",
+]
 categories = ["Development", "System", "Framework"]
 license = "MIT"
 
@@ -25,10 +32,14 @@ schemars = "0.8.21"
 serde = { version = "1.0.206", features = ["derive"] }
 zbus = "4.4.0"
 serde_json = "1.0.124"
-tokio = { version = "1.39.2", features = ["rt-multi-thread", "macros", "tracing"] }
+tokio = { version = "1.39.2", features = [
+    "rt-multi-thread",
+    "macros",
+    "tracing",
+] }
 console-subscriber = "0.4.0"
 
-zeromq = { git = "https://github.com/zeromq/zmq.rs.git", commit="1334d257ee4ddb73c379bfa667a8e0cfa8cc55d9", default-features = false, features = [
+zeromq = { git = "https://github.com/zeromq/zmq.rs.git", commit = "1334d257ee4ddb73c379bfa667a8e0cfa8cc55d9", default-features = false, features = [
     "tokio-runtime",
     "ipc-transport",
 ] }

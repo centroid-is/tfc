@@ -664,7 +664,7 @@ define_value_type!(StatorResistance, u32, 101565, 0x2C01, 2); // 10.1565 ohms so
 define_value_type!(StatorLeakageInductance, u32, 23566, 0x2C01, 3); // 23.566 mH so factor 1000
 define_value_type!(RatedSpeed, u16, 1450, 0x2C01, 4); // rpm
 define_value_type!(RatedFrequency, u16, 500, 0x2C01, 5); // decihertz
-define_value_type!(RatedPower, u16, 750, 0x2C01, 6); // centiwatts
+define_value_type!(RatedPower, u16, 75, 0x2C01, 6); // centiwatts
 define_value_type!(RatedVoltage, u16, 400, 0x2C01, 7); // volts
 define_value_type!(RatedCurrent, u32, 1700, 0x6075, 0); // milliampere
 define_value_type!(CosinePhi, u16, 80, 0x2C01, 8); // cosine phi factor 100
