@@ -300,12 +300,17 @@ impl Bus {
         dbus: zbus::Connection,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         loop {
+            let mut cnt = 0;
             loop {
                 let res = self.init(dbus.clone()).await;
                 if let Err(e) = res {
                     warn!(target: &self.log_key, "Failed to init: {}", e);
                 } else {
                     break;
+                }
+                cnt += 1;
+                if cnt > 10 {
+                    return Err("Failed to init".into());
                 }
                 tokio::time::sleep(Duration::from_millis(1000)).await;
             }

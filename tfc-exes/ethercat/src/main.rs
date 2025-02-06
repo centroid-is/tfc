@@ -62,7 +62,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         opcua_handle,
     );
 
-    tokio::spawn(async move { bus.init_and_run(dbus).await });
+    tokio::spawn(async move {
+        bus.init_and_run(dbus).await;
+        panic!("Failed to init and run bus");
+    });
 
     #[cfg(feature = "opcua-expose")]
     tokio::spawn(async move { opcua_server.server.run().await });
