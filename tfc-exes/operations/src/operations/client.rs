@@ -214,6 +214,8 @@ mod tests {
                 .await?;
             let client = OperationsClient::new(_bus.clone());
             let (_server, _) = OperationsImpl::spawn(_bus.clone());
+            // let the server start up
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             Ok(Self {
                 _bus,
                 client,
