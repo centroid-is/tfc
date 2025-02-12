@@ -39,7 +39,7 @@ tokio = { version = "1.39.2", features = [
 ] }
 console-subscriber = "0.4.0"
 
-zeromq = { git = "https://github.com/zeromq/zmq.rs.git", commit = "1334d257ee4ddb73c379bfa667a8e0cfa8cc55d9", default-features = false, features = [
+zeromq = { git = "https://github.com/jbbjarnason/zmq.rs.git", commit = "198f623d4a81410fa18fa500bfbf24656da49c79", branch = "handle-disconnects", default-features = false, features = [
     "tokio-runtime",
     "ipc-transport",
 ] }

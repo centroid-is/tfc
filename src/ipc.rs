@@ -66,13 +66,20 @@ impl<T: TypeName> Base<T> {
     }
 }
 
+pub struct SubSocketWrapper {
+    pub socket: SubSocket,
+    pub signal_name: String,
+}
+
 pub struct Slot<T> {
     base: Base<T>,
-    sock_sender: mpsc::Sender<SubSocket>,
+    sock_sender: mpsc::Sender<SubSocketWrapper>,
     new_value_sender: watch::Sender<Option<T>>,
     recv_task: Option<JoinHandle<()>>,
     register_task: Option<JoinHandle<()>>,
     connection_change_task: Option<JoinHandle<()>>,
+    reconnect_task: Option<JoinHandle<()>>,
+    disconnected_notifier: watch::Sender<String>,
 }
 
 impl<T> Slot<T>
@@ -90,7 +97,7 @@ where
     <T as AnyFilterDecl>::Type: Filter<T>,
 {
     pub fn new(dbus: zbus::Connection, base: Base<T>) -> Self {
-        let (sock_sender, sock_receiver) = mpsc::channel::<SubSocket>(1);
+        let (sock_sender, sock_receiver) = mpsc::channel::<SubSocketWrapper>(8);
         let (new_value_sender, _) = watch::channel(None as Option<T>);
 
         let this = Self {
@@ -100,22 +107,26 @@ where
             recv_task: None,
             register_task: None,
             connection_change_task: None,
+            reconnect_task: None,
+            disconnected_notifier: watch::channel(String::new()).0,
         };
         let mut this = this.register(dbus.clone());
         this.start_recv_task(sock_receiver, dbus);
+        this.start_reconnect_task();
         this
     }
 
     fn start_recv_task(
         &mut self,
-        mut sock_receiver: mpsc::Receiver<SubSocket>,
+        mut sock_receiver: mpsc::Receiver<SubSocketWrapper>,
         bus: zbus::Connection,
     ) {
         let new_value_sender = self.new_value_sender.clone();
         let log_key = self.base.log_key.clone();
         let short_name = self.base.name.clone();
+        let disconnected_notifier = self.disconnected_notifier.clone();
         self.recv_task = Some(tokio::spawn(async move {
-            let mut sock: Option<SubSocket> = None;
+            let mut sock: Option<SubSocketWrapper> = None;
             let mut unfiltered_last_value: Option<T> = None;
             let filters = Filters::new(
                 bus.clone(),
@@ -123,13 +134,12 @@ where
             );
             loop {
                 select! {
-                    // todo do we need to forward declare the stream here?
                     new_sock = sock_receiver.next() => {
                         sock = new_sock;
                     },
                     result = async {
                         if let Some(ref mut s) = sock {
-                            s.recv().await
+                            s.socket.recv().await
                         } else {
                             futures::future::pending().await
                         }
@@ -154,9 +164,41 @@ where
                                 unfiltered_last_value = Some(new_value);
                             },
                             Err(e) => {
-                                error!(target: &log_key, "Error receiving message: {}", e);
+                                error!(target: &log_key, "Error receiving message: {}, lets erase the socket and try reconnecting", e);
+                                if let Some(s) = sock.take() {
+                                    let _ = disconnected_notifier.send(s.signal_name).map_err(|e| {
+                                        error!(target: &log_key, "Failed to send disconnected signal: {}", e);
+                                    });
+                                }
+                                sock = None;
                             }
                         }
+                    }
+                }
+            }
+        }));
+    }
+
+    fn start_reconnect_task(&mut self) {
+        let mut disconnected_receiver = self.disconnected_notifier.subscribe();
+        let sock_sender = self.sock_sender.clone();
+        let log_key = self.base.log_key.clone();
+        self.reconnect_task = Some(tokio::spawn(async move {
+            loop {
+                match disconnected_receiver.changed().await {
+                    Ok(_) => {
+                        let signal_name = disconnected_receiver.borrow_and_update().clone();
+                        debug!(target: &log_key, "Reconnecting to signal: {}", signal_name);
+                        let _ =Self::async_connect_(&log_key, sock_sender.clone(), &signal_name)
+                            .await
+                            .map_err(|e| {
+                                error!(target: &log_key, 
+                                "Failed to reconnect to signal: {} error: {}", signal_name, e);
+                            });
+                    }
+                    Err(_) => {
+                        warn!(target: &log_key, "Disconnected receiver dropped");
+                        break;
                     }
                 }
             }
@@ -229,7 +271,7 @@ where
 
     async fn async_connect_(
         log_key: &str,
-        mut sock_sender: mpsc::Sender<SubSocket>,
+        mut sock_sender: mpsc::Sender<SubSocketWrapper>,
         signal_name: &str,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         if signal_name.is_empty() {
@@ -261,7 +303,12 @@ where
         sock.subscribe("").await?;
         // little hack to make sure the connection is established
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-        sock_sender.send(sock).await?;
+        sock_sender
+            .send(SubSocketWrapper {
+                socket: sock,
+                signal_name: signal_name.to_string(),
+            })
+            .await?;
         Ok(())
     }
     pub async fn async_connect(
@@ -349,6 +396,9 @@ impl<T> Drop for Slot<T> {
         }
         if let Some(connection_change_task) = self.connection_change_task.take() {
             connection_change_task.abort();
+        }
+        if let Some(reconnect_task) = self.reconnect_task.take() {
+            reconnect_task.abort();
         }
     }
 }
