@@ -702,7 +702,7 @@ impl Device for El3356 {
 
                 // take into account the ratio of gravity
                 let ratio = scale.ratio.load(std::sync::atomic::Ordering::Relaxed);
-                let signal_mass = signal_mass / ratio;
+                let signal_mass = signal_mass * ratio; // todo which is correct multiply or divide?
 
                 // lets scale the full resolution down to the given resolution
                 let scaling_factor = 1.0 / self.config.read().resolution; // 0.001 example
