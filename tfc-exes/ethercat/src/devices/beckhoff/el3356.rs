@@ -345,41 +345,12 @@ pub enum ModeImpl {
     Reference(ReferenceScale),
 }
 
-mod my_avg {
-    // TODO: I would much rather like to use median filter, but is is harder to implement it REALLY FAST than average
-    pub struct AvgFilter {
-        window: ringbuf::HeapRb<f64>,
-        sum: f64,
-    }
-    impl AvgFilter {
-        pub fn new(capacity: usize) -> Self {
-            Self {
-                window: ringbuf::HeapRb::new(capacity),
-                sum: 0.0,
-            }
-        }
-        pub fn consume(&mut self, value: f64) -> f64 {
-            use ringbuf::traits::{Consumer, Observer, Producer};
-            if self.window.is_full() {
-                let old_value = self.window.try_pop().expect("This should never happen");
-                self.sum -= old_value;
-            }
-            self.sum += value;
-            self.window
-                .try_push(value)
-                .expect("This should never happen");
-            // this is incorrect while window is getting filled, should not be problematic
-            self.sum / self.window.capacity().get() as f64
-        }
-    }
-}
-
 pub struct El3356 {
     cnt: u128,
     config: ConfMan<Config>,
     log_key: String,
     mode: ModeImpl,
-    filter: my_avg::AvgFilter,
+    filter: tfc::median_filter::MedianFilter,
     calibrate_cmd: Arc<std::sync::atomic::AtomicBool>,
     zero_calibrate_cmd: Arc<std::sync::atomic::AtomicBool>,
     tare_cmd: Arc<std::sync::atomic::AtomicBool>,
@@ -402,7 +373,7 @@ impl El3356 {
                 ModeImpl::Reference(ReferenceScale::new(dbus.clone(), prefix.clone()))
             }
         };
-        let filter = my_avg::AvgFilter::new(config.read().filter_window as usize);
+        let filter = tfc::median_filter::MedianFilter::new(config.read().filter_window as usize);
 
         let mut calibrate_slot = tfc::ipc::Slot::new(
             dbus.clone(),
