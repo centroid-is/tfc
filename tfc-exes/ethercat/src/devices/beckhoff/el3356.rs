@@ -272,6 +272,10 @@ impl AtomicF64 {
 pub struct Scale {
     ratio_slot: tfc::ipc::Slot<f64>,
     mass_signal: tfc::ipc::Signal<f64>,
+    unbias_mass_signal: tfc::ipc::Signal<f64>,
+    raw_signal: tfc::ipc::Signal<f64>,
+    raw_filtered_signal: tfc::ipc::Signal<f64>,
+    ratio_signal: tfc::ipc::Signal<f64>,
     tare: f64, // signal read tare for fixing zero point, runtime value
     ratio: Arc<AtomicF64>,
     last_mass: f64,
@@ -294,16 +298,72 @@ impl Scale {
             dbus.clone(),
             tfc::ipc::Base::new(format!("{prefix}/mass").as_str(), Some("Mass output in kg")),
         );
+        let unbias_mass_signal = tfc::ipc::Signal::new(
+            dbus.clone(),
+            tfc::ipc::Base::new(
+                format!("{prefix}/unbias_mass").as_str(),
+                Some("Mass output in kg, unbias by ratio"),
+            ),
+        );
+        let raw_signal = tfc::ipc::Signal::new(
+            dbus.clone(),
+            tfc::ipc::Base::new(
+                format!("{prefix}/raw").as_str(),
+                Some("AD raw output in mV/V"),
+            ),
+        );
+        let raw_filtered_signal = tfc::ipc::Signal::new(
+            dbus.clone(),
+            tfc::ipc::Base::new(
+                format!("{prefix}/raw_filtered").as_str(),
+                Some("AD raw filtered output in mV/V"),
+            ),
+        );
+        let ratio_signal = tfc::ipc::Signal::new(
+            dbus.clone(),
+            tfc::ipc::Base::new(
+                format!("{prefix}/ratio").as_str(),
+                Some("Gravity ratio of vessel"),
+            ),
+        );
         #[cfg(feature = "dbus-expose")]
         tfc::ipc::dbus::SignalInterface::register(
             mass_signal.base(),
             dbus.clone(),
             mass_signal.subscribe(),
         );
+        #[cfg(feature = "dbus-expose")]
+        tfc::ipc::dbus::SignalInterface::register(
+            unbias_mass_signal.base(),
+            dbus.clone(),
+            unbias_mass_signal.subscribe(),
+        );
+        #[cfg(feature = "dbus-expose")]
+        tfc::ipc::dbus::SignalInterface::register(
+            raw_signal.base(),
+            dbus.clone(),
+            raw_signal.subscribe(),
+        );
+        #[cfg(feature = "dbus-expose")]
+        tfc::ipc::dbus::SignalInterface::register(
+            raw_filtered_signal.base(),
+            dbus.clone(),
+            raw_filtered_signal.subscribe(),
+        );
+        #[cfg(feature = "dbus-expose")]
+        tfc::ipc::dbus::SignalInterface::register(
+            ratio_signal.base(),
+            dbus.clone(),
+            ratio_signal.subscribe(),
+        );
 
         Self {
             ratio_slot,
             mass_signal,
+            unbias_mass_signal,
+            raw_signal,
+            raw_filtered_signal,
+            ratio_signal,
             tare: 0.0,
             ratio,
             last_mass: 0.0,
@@ -577,7 +637,7 @@ impl Device for El3356 {
 
         let raw_signal = input_pdo.raw_value as f64;
 
-        let signal = self.filter.consume(raw_signal);
+        let signal_filtered = self.filter.consume(raw_signal);
 
         // if self.cnt % 1000 == 0 {
         //     let input_pdo = InputPdo::unpack_from_slice(&i).expect("Error unpacking input PDO");
@@ -605,9 +665,9 @@ impl Device for El3356 {
             // I am guessing this is correct, but I am not sure
             let signal_scaled = match &self.mode {
                 ModeImpl::Scale(ref scale) => {
-                    signal / scale.ratio.load(std::sync::atomic::Ordering::Relaxed)
+                    signal_filtered / scale.ratio.load(std::sync::atomic::Ordering::Relaxed)
                 }
-                ModeImpl::Reference(_) => signal,
+                ModeImpl::Reference(_) => signal_filtered,
             };
             self.config.write().value_mut().zero_signal_read = signal_scaled;
             info!(target: &self.log_key, "Zero signal read set to {}", signal_scaled);
@@ -621,7 +681,7 @@ impl Device for El3356 {
             .load(std::sync::atomic::Ordering::Relaxed)
         {
             // lets begin by withdraw the zero signal read
-            let signal_scaled = signal - self.config.read().zero_signal_read;
+            let signal_scaled = signal_filtered - self.config.read().zero_signal_read;
             // now we need to scale it to the gravity factor
             let signal_scaled = match &self.mode {
                 ModeImpl::Scale(ref scale) => {
@@ -643,7 +703,7 @@ impl Device for El3356 {
             ModeImpl::Reference(_) => self.config.read().zero_signal_read,
         };
 
-        let signal = signal - zero; // we are now offsetted by zero reading
+        let signal = signal_filtered - zero; // we are now offsetted by zero reading
 
         let calibration_signal = self.config.read().calibration_signal_read;
         let zeroed_calibration_signal = calibration_signal - zero;
@@ -673,11 +733,12 @@ impl Device for El3356 {
 
                 // take into account the ratio of gravity
                 let ratio = scale.ratio.load(std::sync::atomic::Ordering::Relaxed);
-                let signal_mass = signal_mass * ratio; // todo which is correct multiply or divide?
+                let signal_mass_ratio = signal_mass * ratio; // todo which is correct multiply or divide?
 
                 // lets scale the full resolution down to the given resolution
                 let scaling_factor = 1.0 / self.config.read().resolution; // 0.001 example
-                let signal_mass_rounded = (signal_mass * scaling_factor).round() / scaling_factor;
+                let signal_mass_rounded =
+                    (signal_mass_ratio * scaling_factor).round() / scaling_factor;
 
                 if signal_mass_rounded.is_nan() {
                     return Err("Signal mass rounded is NaN, this should not happen".into());
@@ -693,6 +754,14 @@ impl Device for El3356 {
                 }
                 scale.last_mass = signal_mass_rounded;
                 scale.mass_signal.async_send(signal_mass_rounded).await?;
+                scale.unbias_mass_signal.async_send(signal_mass).await?;
+                scale.raw_signal.async_send(raw_signal).await?;
+                scale
+                    .raw_filtered_signal
+                    .async_send(signal_filtered)
+                    .await?;
+                scale.ratio_signal.async_send(ratio).await?;
+
                 // info!(target: &self.log_key, "Mass signal sent: {} at raw signal {}", signal_mass_rounded, raw_signal);
                 Ok(()) as Result<(), Box<dyn Error + Send + Sync>>
             }
@@ -761,6 +830,38 @@ impl Device for El3356 {
                 tfc::ipc::opcua::SignalInterface::new(
                     scale.mass_signal.base(),
                     scale.mass_signal.subscribe(),
+                    manager.clone(),
+                    subscriptions.clone(),
+                    namespace,
+                )
+                .register();
+                tfc::ipc::opcua::SignalInterface::new(
+                    scale.unbias_mass_signal.base(),
+                    scale.unbias_mass_signal.subscribe(),
+                    manager.clone(),
+                    subscriptions.clone(),
+                    namespace,
+                )
+                .register();
+                tfc::ipc::opcua::SignalInterface::new(
+                    scale.raw_signal.base(),
+                    scale.raw_signal.subscribe(),
+                    manager.clone(),
+                    subscriptions.clone(),
+                    namespace,
+                )
+                .register();
+                tfc::ipc::opcua::SignalInterface::new(
+                    scale.raw_filtered_signal.base(),
+                    scale.raw_filtered_signal.subscribe(),
+                    manager.clone(),
+                    subscriptions.clone(),
+                    namespace,
+                )
+                .register();
+                tfc::ipc::opcua::SignalInterface::new(
+                    scale.ratio_signal.base(),
+                    scale.ratio_signal.subscribe(),
                     manager.clone(),
                     subscriptions.clone(),
                     namespace,
