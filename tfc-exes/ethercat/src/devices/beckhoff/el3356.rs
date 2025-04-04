@@ -698,21 +698,26 @@ impl Device for El3356 {
                 .store(false, std::sync::atomic::Ordering::Relaxed);
         }
 
+        let ratio = match &self.mode {
+            ModeImpl::Scale(ref scale) => scale.ratio.load(std::sync::atomic::Ordering::Relaxed),
+            ModeImpl::Reference(_) => 1.0,
+        };
+
         let zero = match &self.mode {
             ModeImpl::Scale(ref scale) => self.config.read().zero_signal_read + scale.tare,
             ModeImpl::Reference(_) => self.config.read().zero_signal_read,
         };
-
-        let signal = signal_filtered - zero; // we are now offsetted by zero reading
-
         let calibration_signal = self.config.read().calibration_signal_read;
-        let zeroed_calibration_signal = calibration_signal - zero;
-        // Is this needed? Does not seem to be needed for Reference mode
-        // if zeroed_calibration_signal <= 0.0 {
-        //     return Err("Zeroed calibration signal is <= 0, this should not happen".into());
-        // }
+
+        let effective_zero = zero * ratio;
+        let effective_calibration_signal = calibration_signal * ratio;
+
+        let effective_signal = signal_filtered - effective_zero;
+        let zeroed_calibration_signal = effective_calibration_signal - effective_zero;
+
         // now we have the mass in full resolution
-        let signal_mass = signal * self.config.read().calibration_load / zeroed_calibration_signal;
+        let signal_mass =
+            effective_signal * self.config.read().calibration_load / zeroed_calibration_signal;
 
         if self.tare_cmd.load(std::sync::atomic::Ordering::Relaxed) {
             // Calibrate the internals of the device during tare
@@ -725,20 +730,15 @@ impl Device for El3356 {
                 // let's see whether we should set tare signal read now
                 // BIG TODO: we need to make sure that the tare offset is not too large, have configurable limits
                 if self.tare_cmd.load(std::sync::atomic::Ordering::Relaxed) {
-                    scale.tare += signal;
+                    scale.tare += effective_signal;
                     info!(target: &self.log_key, "Tare offset set to {}", scale.tare);
                     self.tare_cmd
                         .store(false, std::sync::atomic::Ordering::Relaxed);
                 }
 
-                // take into account the ratio of gravity
-                let ratio = scale.ratio.load(std::sync::atomic::Ordering::Relaxed);
-                let signal_mass_ratio = signal_mass / ratio;
-
                 // lets scale the full resolution down to the given resolution
                 let scaling_factor = 1.0 / self.config.read().resolution; // 0.001 example
-                let signal_mass_rounded =
-                    (signal_mass_ratio * scaling_factor).round() / scaling_factor;
+                let signal_mass_rounded = (signal_mass * scaling_factor).round() / scaling_factor;
 
                 if signal_mass_rounded.is_nan() {
                     return Err("Signal mass rounded is NaN, this should not happen".into());
