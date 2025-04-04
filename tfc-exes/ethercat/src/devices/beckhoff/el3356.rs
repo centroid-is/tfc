@@ -709,6 +709,9 @@ impl Device for El3356 {
         };
         let calibration_signal = self.config.read().calibration_signal_read;
 
+        let signal_mass_non_ratio = (signal_filtered - zero) * self.config.read().calibration_load
+            / (calibration_signal - zero);
+
         let effective_zero = zero * ratio;
         let effective_calibration_signal = calibration_signal * ratio;
 
@@ -754,7 +757,10 @@ impl Device for El3356 {
                 }
                 scale.last_mass = signal_mass_rounded;
                 scale.mass_signal.async_send(signal_mass_rounded).await?;
-                scale.unbias_mass_signal.async_send(signal_mass).await?;
+                scale
+                    .unbias_mass_signal
+                    .async_send(signal_mass_non_ratio)
+                    .await?;
                 scale.raw_signal.async_send(raw_signal).await?;
                 scale
                     .raw_filtered_signal
